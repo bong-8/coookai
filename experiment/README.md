@@ -63,15 +63,22 @@ python -m experiment.server_ext.pickle_agent \
 pickle을 다시 불러와(서버의 `get_policy()`와 동일한 방식) 61스텝 무오류 실행**까지
 확인했다. 생성된 파일은
 `src/overcooked_demo/server/static/assets/agents/RuleBasedBot_CrampedRoom/agent.pickle`.
-서버 `config.json`의 `predefined.experimentParams.playerOne`을
-`"RuleBasedBot_CrampedRoom"`으로 바꾸면(현재는 `"human"`) 사람 vs 규칙기반봇
-게임이 만들어진다. 레이아웃마다 별도로 생성해야 하므로(mlam이 레이아웃별 캐시),
-파일럿에서 쓸 레이아웃 각각에 대해 이 스크립트를 한 번씩 더 돌려야 한다.
+
+## config.json 기본 실험 설정 (완료)
+
+`predefined.experimentParams`를 사람 vs 규칙기반봇으로 바꿨다:
+`playerOne`을 `"human"` → `"RuleBasedBot_CrampedRoom"`. 동시에
+`layouts`를 `["counter_circuit", "cramped_room"]` → `["cramped_room"]`으로
+줄였다 — mlam(따라서 우리 봇)은 레이아웃별로 다시 계산해야 하는데
+지금은 `cramped_room`용만 만들어놨기 때문에, 원본 README의 "Layout
+Compatibility" 경고(다른 레이아웃에 쓰면 봇이 그냥 조용히 멈춰버림)에 걸리지
+않도록 실험 레이아웃을 봇이 있는 것 하나로 제한했다.
 
 ## 다음 작업 (우선순위 순)
 
-1. 파일럿에서 실제 쓸 레이아웃 전체에 대해 `pickle_agent.py` 반복 실행 +
-   `config.json`의 `playerOne`을 해당 에이전트 이름으로 설정.
+1. 파일럿에서 실제 쓸 레이아웃을 추가로 정하면, 그 레이아웃마다
+   `pickle_agent.py`를 한 번씩 더 돌려서 에이전트를 만들고
+   `config.json`의 `layouts`에도 추가.
 2. 클라이언트(JS) 쪽에서 핑 버튼 4개(`PING_HELP/LOOK/MINE/OK`)를 기존 액션
    전송 함수로 그대로 보내도록 연결 (서버 쪽은 이미 이 문자열들을 처리함) —
    버튼 UI 자체가 아직 없으므로 이게 남은 마지막 배선.

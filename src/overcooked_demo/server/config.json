@@ -7,10 +7,10 @@
     "MAX_FPS" : 30,
     "predefined" : {
         "experimentParams" : {
-            "layouts" : ["counter_circuit", "cramped_room"],
+            "layouts" : ["cramped_room"],
             "gameTime" : 5,
             "playerZero" : "human",
-            "playerOne" : "human",
+            "playerOne" : "RuleBasedBot_CrampedRoom",
             "randomized" : true,
             "dataCollection": "on"
         },
