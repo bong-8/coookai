@@ -1,0 +1,114 @@
+"""
+Phase 2: 핑 소통 채널.
+
+원본 overcooked_demo/server/game.py 의 OvercookedGame 은 건드리지 않는다.
+대신 이 파일이 OvercookedGame 을 상속해, 원본 그대로 두고도 동작이 바뀌는
+지점만 오버라이드한다. 이 파일과 원본의 diff 자체가 IRB 서류에 첨부 가능한
+"실험 개입(intervention)의 전체"가 된다.
+
+설계 (파이프라인 문서 Phase 2 "단축 옵션"):
+    새 Socket.IO 이벤트(on_ping/broadcast_ping)를 따로 만들지 않고,
+    기존 "action" 이벤트 파이프를 그대로 재사용한다.
+      - 원본 OvercookedGame.enqueue_action(player_id, action) 은
+        action_to_overcooked_action[action] 에서 STAY/UP/DOWN/LEFT/RIGHT/SPACE
+        가 아니면 KeyError.
+      - 클라이언트가 "PING_HELP" / "PING_LOOK" / "PING_MINE" / "PING_OK" 같은
+        문자열을 그대로 그 action 이벤트로 보내면, 여기서 "PING_" 접두어를
+        감지해 이동 큐가 아니라 별도의 핑 큐로 라우팅한다.
+      - apply_actions()가 만드는 transition dict에 "pings" 필드를 추가해
+        self.trajectory에 그대로 쌓이게 한다 (원본 로깅 파이프를 재사용).
+      - 상대 참가자가 보낸 핑은, npc_policies 중 ping_queue 속성을 가진 정책
+        (=PingReactiveBot, Phase 3)에도 즉시 전달한다.
+
+이 로직은 PingMixin 에 원본 클래스와 무관하게 분리되어 있다. 실제 배포용
+클래스는 PingEnabledGame = PingMixin + OvercookedGame 조합이고, 단위 테스트는
+PingMixin 을 경량 가짜(fake) 베이스 클래스와 조합해 원본의 무거운 의존성
+(ray / human_aware_rl.rllib.rllib, 구버전 gym) 없이 로직만 검증한다.
+자세한 이유와 실제 배포 시 필요한 의존성은 test_ping_logic.py 상단 주석 참고.
+
+TODO(파일럿 전 확정 필요):
+- 핑 타입 목록(VALID_PING_TYPES)이 실제 UI 버튼과 정확히 일치하는지
+- _route_ping_to_npc_bots가 "사람이 보낸 핑만" NPC에 전달하는지, AI끼리도
+  핑을 주고받게 할지 (현재: 모든 플레이어의 핑을 모든 NPC에 전달)
+"""
+import time
+
+PING_PREFIX = "PING_"
+VALID_PING_TYPES = {"help", "look", "mine", "ok"}
+
+
+class PingMixin:
+    """
+    OvercookedGame(혹은 그 계약을 만족하는 아무 클래스)에 믹스인되는
+    핑 채널 로직. 원본 클래스의 존재를 가정하지 않으므로 단독으로도
+    테스트 가능하다.
+    """
+
+    def _ping_init(self):
+        # 이번 tick 동안 들어온 핑들. apply_actions()에서 transition에 붙이고 비운다.
+        self._pending_pings = []
+
+    def enqueue_action(self, player_id, action):
+        if isinstance(action, str) and action.startswith(PING_PREFIX):
+            self._enqueue_ping(player_id, action)
+            return
+        super(PingMixin, self).enqueue_action(player_id, action)
+
+    def _enqueue_ping(self, player_id, action):
+        if not self.is_active or player_id not in self.players:
+            return
+        ping_type = action[len(PING_PREFIX):].lower()
+        if ping_type not in VALID_PING_TYPES:
+            # 알 수 없는 핑 타입은 조용히 무시 (원본처럼 KeyError로 게임을 죽이지 않음)
+            return
+        entry = {
+            "player_id": player_id,
+            "ping_type": ping_type,
+            "timestamp": time.time(),
+            "step": getattr(self, "curr_tick", None),
+        }
+        self._pending_pings.append(entry)
+        self._route_ping_to_npc_bots(entry)
+
+    def _route_ping_to_npc_bots(self, entry):
+        """PingReactiveBot(= ping_queue 속성을 가진 정책)에 방금 들어온 핑을 즉시 전달."""
+        for policy in getattr(self, "npc_policies", {}).values():
+            if hasattr(policy, "ping_queue"):
+                policy.ping_queue.append(entry)
+
+    def apply_actions(self):
+        result = super(PingMixin, self).apply_actions()
+        pings_this_tick, self._pending_pings = self._pending_pings, []
+        if self.trajectory:
+            self.trajectory[-1]["pings"] = pings_this_tick
+        return result
+
+    def tick(self):
+        # PingReactiveBot의 반응 지연 계산용 스텝 카운터를 매 tick 갱신.
+        for policy in getattr(self, "npc_policies", {}).values():
+            if hasattr(policy, "note_step"):
+                policy.note_step()
+        return super(PingMixin, self).tick()
+
+
+def build_ping_enabled_game_class():
+    """
+    실제 overcooked_demo 서버 환경(ray/human_aware_rl 설치된 곳)에서만 호출.
+    app.py에서 OvercookedGame 대신 이 함수가 반환하는 클래스를 인스턴스화하면 됨:
+
+        from experiment.server_ext.ping_game import build_ping_enabled_game_class
+        PingEnabledGame = build_ping_enabled_game_class()
+        game = PingEnabledGame(...)  # 원본 OvercookedGame과 생성자 동일
+
+    무거운 의존성 체인(ray, gym, human_aware_rl.rllib.rllib) 때문에 import를
+    모듈 최상단이 아니라 이 함수 안으로 미뤄서, 이 파일 자체는 경량 venv에서도
+    항상 import 가능하게 유지한다 (테스트에서 PingMixin만 쓰기 위함).
+    """
+    from overcooked_demo.server.game import OvercookedGame
+
+    class PingEnabledGame(PingMixin, OvercookedGame):
+        def __init__(self, *args, **kwargs):
+            super(PingEnabledGame, self).__init__(*args, **kwargs)
+            self._ping_init()
+
+    return PingEnabledGame
