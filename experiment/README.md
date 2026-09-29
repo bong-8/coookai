@@ -40,16 +40,46 @@ Phase 2는 원본 `overcooked_demo/server/game.py`(Flask/Socket.IO 서버 안,
 설치하지 않음). `PingMixin`은 원본 클래스에 의존하지 않는 순수 로직이라,
 같은 클래스를 실제 서버(`build_ping_enabled_game_class()`)에도 그대로 쓴다.
 
+## Flask 서버 연결 (완료)
+
+`src/overcooked_demo/server/app.py`의 `GAME_NAME_TO_CLS["overcooked"]`가
+`OvercookedGame` 대신 `ping_game.build_ping_enabled_game_class()`가 반환하는
+클래스를 쓰도록 바뀌었다 (2줄 import + 1줄 교체가 개입의 전부, git diff로 확인
+가능). `config.json`을 안 건드려도 기본 게임 생성 경로가 자동으로 핑 채널을
+포함하게 된다.
+
+## NPC 봇 배포 (완료)
+
+`experiment/server_ext/pickle_agent.py`로 `RoleRestrictedBot`/`PingReactiveBot`을
+서버가 읽는 `agent.pickle` 포맷으로 저장한다:
+
+```bash
+python -m experiment.server_ext.pickle_agent \
+    --layout cramped_room --excluded-roles deliver \
+    --name RuleBasedBot_CrampedRoom --reactive
+```
+
+`cramped_room` 레이아웃으로 실제 생성·검증 완료 — **별도의 새 파이썬 프로세스에서
+pickle을 다시 불러와(서버의 `get_policy()`와 동일한 방식) 61스텝 무오류 실행**까지
+확인했다. 생성된 파일은
+`src/overcooked_demo/server/static/assets/agents/RuleBasedBot_CrampedRoom/agent.pickle`.
+서버 `config.json`의 `predefined.experimentParams.playerOne`을
+`"RuleBasedBot_CrampedRoom"`으로 바꾸면(현재는 `"human"`) 사람 vs 규칙기반봇
+게임이 만들어진다. 레이아웃마다 별도로 생성해야 하므로(mlam이 레이아웃별 캐시),
+파일럿에서 쓸 레이아웃 각각에 대해 이 스크립트를 한 번씩 더 돌려야 한다.
+
 ## 다음 작업 (우선순위 순)
 
-1. **Flask 서버에 실제로 연결**(남은 배선 작업) — `overcooked_demo/server/app.py`가
-   `OvercookedGame`을 만드는 지점에서 `ping_game.build_ping_enabled_game_class()`가
-   반환하는 클래스를 대신 쓰도록 1줄 교체. 이 작업 자체는 실제 서버 의존성
-   (ray/human_aware_rl 구버전 스택)이 설치된 환경에서만 실행·검증 가능.
+1. 파일럿에서 실제 쓸 레이아웃 전체에 대해 `pickle_agent.py` 반복 실행 +
+   `config.json`의 `playerOne`을 해당 에이전트 이름으로 설정.
 2. 클라이언트(JS) 쪽에서 핑 버튼 4개(`PING_HELP/LOOK/MINE/OK`)를 기존 액션
-   전송 함수로 그대로 보내도록 연결 (서버 쪽은 이미 이 문자열들을 처리함).
+   전송 함수로 그대로 보내도록 연결 (서버 쪽은 이미 이 문자열들을 처리함) —
+   버튼 UI 자체가 아직 없으므로 이게 남은 마지막 배선.
 3. `_PING_RESPONSE_MAP`과 `_respond_to_help()`의 실제 반응 규칙 확정 (지도교수 상담 필요 항목).
-4. Phase 5 (실험 플로우) 착수.
+4. 실제 Flask 서버 기동 검증 — ray/human_aware_rl 구버전 스택이 설치된 환경에서
+   `python app.py`로 띄워 브라우저로 직접 플레이해보는 것. 지금까지의 검증은
+   전부 그 무거운 스택 없이 로직만 확인한 것이므로, 이 마지막 단계는 아직 안 됨.
+5. Phase 5 (실험 플로우) 착수.
 
 ## 알려진 이슈
 

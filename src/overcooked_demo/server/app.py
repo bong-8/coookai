@@ -23,6 +23,14 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 from game import Game, OvercookedGame, OvercookedTutorial
 from utils import ThreadSafeDict, ThreadSafeSet
 
+# Phase 2 (핑 소통 채널, experiment/server_ext/ping_game.py): 원본 OvercookedGame
+# 대신 핑 채널이 믹스인된 클래스를 쓰도록 GAME_NAME_TO_CLS에서만 교체한다.
+# 원본 game.py/app.py의 나머지 로직은 그대로다 — 이 두 줄이 실험을 위한 개입의 전부.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+from experiment.server_ext.ping_game import build_ping_enabled_game_class
+
+PingEnabledGame = build_ping_enabled_game_class()
+
 ### Thoughts -- where I'll log potential issues/ideas as they come up
 # Should make game driver code more error robust -- if overcooked randomlly errors we should catch it and report it to user
 # Right now, if one user 'join's before other user's 'join' finishes, they won't end up in same game
@@ -94,7 +102,7 @@ USER_ROOMS = ThreadSafeDict()
 
 # Mapping of string game names to corresponding classes
 GAME_NAME_TO_CLS = {
-    "overcooked": OvercookedGame,
+    "overcooked": PingEnabledGame,  # Phase 2: 핑 채널 포함 (원본 OvercookedGame 상속)
     "tutorial": OvercookedTutorial,
 }
 
