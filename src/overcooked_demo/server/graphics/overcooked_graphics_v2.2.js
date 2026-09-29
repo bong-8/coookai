@@ -17,6 +17,16 @@ var DIRECTION_TO_NAME = {
     '-1,0': 'WEST'
 };
 
+// Phase 2: 핑 소통 채널. 서버(experiment/server_ext/ping_game.py의 PingMixin)가
+// get_state()에 얹어 보내는 "pings": {player_idx(문자열): ping_type} 을 캐릭터
+// 머리 위 말풍선으로 그린다. 텍스트/이모지만 쓰고 별도 이미지 에셋은 없다.
+var PING_LABELS = {
+    help: '🙋 도와줘',
+    look: '👀 이거 봐',
+    mine: '🙋‍♂️ 내가 할게',
+    ok: '👍 OK'
+};
+
 var scene_config = {
     player_colors : {0: 'blue', 1: 'green'},
     tileSize : 80,
@@ -104,6 +114,8 @@ class OvercookedScene extends Phaser.Scene {
         this.hud_data.bonus_orders = state.state.bonus_orders;
         this.hud_data.all_orders = state.state.all_orders;
         this.state = state.state;
+        // Phase 2: {player_idx(문자열): ping_type}, 없으면 빈 객체
+        this.pings = state.pings || {};
     }
 
     preload() {
@@ -131,10 +143,51 @@ class OvercookedScene extends Phaser.Scene {
         if (typeof(this.state) !== 'undefined') {
             this._drawState(this.state, this.sprites);
         }
+        this._drawPings(this.pings, this.sprites);
         if (typeof(this.hud_data) !== 'undefined') {
             let { width, height } = this.game.canvas;
             let board_height = height - this.hud_size;
             this._drawHUD(this.hud_data, this.sprites, board_height);
+        }
+    }
+
+    // Phase 2: 핑을 보낸 플레이어의 캐릭터 머리 위에 텍스트 말풍선을 그린다.
+    // 서버가 더 이상 그 핑을 보내지 않으면(=PING_DISPLAY_TICKS 만료) 자동으로 지운다.
+    _drawPings(pings, sprites) {
+        pings = typeof(pings) === 'undefined' ? {} : pings;
+        sprites['ping_bubbles'] =
+            typeof(sprites['ping_bubbles']) === 'undefined' ? {} : sprites['ping_bubbles'];
+
+        // 더 이상 활성화되지 않은 말풍선은 제거
+        for (let pi in sprites['ping_bubbles']) {
+            if (!sprites['ping_bubbles'].hasOwnProperty(pi)) { continue; }
+            if (!pings.hasOwnProperty(pi)) {
+                sprites['ping_bubbles'][pi].destroy();
+                delete sprites['ping_bubbles'][pi];
+            }
+        }
+
+        for (let pi in pings) {
+            if (!pings.hasOwnProperty(pi)) { continue; }
+            let chefSprites = sprites['chefs'] && sprites['chefs'][pi];
+            if (typeof(chefSprites) === 'undefined') { continue; } // 아직 캐릭터가 안 그려졌으면 스킵
+
+            let label = PING_LABELS[pings[pi]] || pings[pi];
+            let x = chefSprites.chefsprite.x + this.tileSize / 2;
+            let y = chefSprites.chefsprite.y - 10;
+
+            if (typeof(sprites['ping_bubbles'][pi]) === 'undefined') {
+                sprites['ping_bubbles'][pi] = this.add.text(x, y, label, {
+                    font: "16px Arial",
+                    fill: "#ffffff",
+                    backgroundColor: "#000000cc",
+                    padding: { x: 6, y: 3 }
+                }).setOrigin(0.5, 1).setDepth(10);
+            } else {
+                let bubble = sprites['ping_bubbles'][pi];
+                bubble.setText(label);
+                bubble.setPosition(x, y);
+            }
         }
     }
     drawLevel() {

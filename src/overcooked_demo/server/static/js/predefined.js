@@ -86,12 +86,14 @@ socket.on('start_game', function(data) {
     $('#reset-game').hide();
     $('#game-title').show();
     enable_key_listener();
+    enable_ping_controls();
     graphics_start(graphics_config);
 });
 
 socket.on('reset_game', function(data) {
     graphics_end();
     disable_key_listener();
+    disable_ping_controls();
     $("#overcooked").empty();
     $("#reset-game").show();
     setTimeout(function() {
@@ -102,8 +104,9 @@ socket.on('reset_game', function(data) {
         };
         graphics_start(graphics_config);
         enable_key_listener();
+        enable_ping_controls();
 
-        // Propogate game stats to parent window 
+        // Propogate game stats to parent window
         window.top.postMessage({ name : "data", data : data.data, done : false}, "*");
     }, data.timeout);
 });
@@ -117,6 +120,7 @@ socket.on('end_game', function(data) {
     // Hide game data and display game-over html
     graphics_end();
     disable_key_listener();
+    disable_ping_controls();
     $('#game-title').hide();
     $('#game-over').show();
     $("#overcooked").empty();
@@ -189,7 +193,32 @@ function disable_key_listener() {
 };
 
 
-/* * * * * * * * * * * * 
+/* * * * * * * * * * * * * * * * * * * * *
+ * Phase 2: 핑 소통 채널 버튼 핸들러      *
+ * 새 이벤트를 만들지 않고, 기존 action  *
+ * 이벤트로 PING_<TYPE> 문자열을 보낸다. *
+ * * * * * * * * * * * * * * * * * * * * */
+
+var PING_TYPES = ['help', 'look', 'mine', 'ok'];
+
+$(function() {
+    PING_TYPES.forEach(function (pingType) {
+        $('#ping-' + pingType).click(function () {
+            socket.emit('action', { 'action': 'PING_' + pingType.toUpperCase() });
+        });
+    });
+});
+
+function enable_ping_controls() {
+    $('#ping-controls').show();
+};
+
+function disable_ping_controls() {
+    $('#ping-controls').hide();
+};
+
+
+/* * * * * * * * * * * *
  * Game Initialization *
  * * * * * * * * * * * */
 

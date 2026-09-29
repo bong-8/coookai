@@ -19,6 +19,12 @@ Phase 2: 핑 소통 채널.
         self.trajectory에 그대로 쌓이게 한다 (원본 로깅 파이프를 재사용).
       - 상대 참가자가 보낸 핑은, npc_policies 중 ping_queue 속성을 가진 정책
         (=PingReactiveBot, Phase 3)에도 즉시 전달한다.
+      - 화면 표시(캐릭터 머리 위 말풍선)용으로, get_state()가 서버 브로드캐스트
+        (state_pong 이벤트, play_game 루프가 몇 fps마다 보냄)에 "pings" 필드를
+        추가로 얹는다: {player_idx(문자열): ping_type}, PING_DISPLAY_TICKS
+        틱 동안만 유지되다가 자동으로 사라진다. 이건 trajectory 로깅과는 별개
+        (로깅은 "핑이 발생한 사실", 이건 "지금 화면에 보여줄 핑")의 용도라
+        따로 관리한다.
 
 이 로직은 PingMixin 에 원본 클래스와 무관하게 분리되어 있다. 실제 배포용
 클래스는 PingEnabledGame = PingMixin + OvercookedGame 조합이고, 단위 테스트는
@@ -36,6 +42,10 @@ import time
 PING_PREFIX = "PING_"
 VALID_PING_TYPES = {"help", "look", "mine", "ok"}
 
+# state_pong은 play_game 루프에서 초당 몇 프레임(fps, 기본 6)마다 브로드캐스트된다.
+# 12틱 ≈ 2초(6fps 기준) 동안 말풍선을 화면에 유지한다.
+PING_DISPLAY_TICKS = 12
+
 
 class PingMixin:
     """
@@ -47,6 +57,8 @@ class PingMixin:
     def _ping_init(self):
         # 이번 tick 동안 들어온 핑들. apply_actions()에서 transition에 붙이고 비운다.
         self._pending_pings = []
+        # 화면에 지금 보여줄 핑: {player_idx: {"ping_type": str, "expires_tick": int}}
+        self._visible_pings = {}
 
     def enqueue_action(self, player_id, action):
         if isinstance(action, str) and action.startswith(PING_PREFIX):
@@ -69,6 +81,20 @@ class PingMixin:
         }
         self._pending_pings.append(entry)
         self._route_ping_to_npc_bots(entry)
+        self._show_ping_on_screen(player_id, ping_type)
+
+    def _show_ping_on_screen(self, player_id, ping_type):
+        """다음 몇 번의 state_pong 브로드캐스트 동안 이 플레이어 머리 위에
+        말풍선을 띄우도록 표시한다. players 리스트에서의 인덱스가 클라이언트
+        Phaser 코드의 state.players[pi]와 대응하는 인덱스다."""
+        if player_id not in self.players:
+            return
+        idx = self.players.index(player_id)
+        curr_tick = getattr(self, "curr_tick", 0)
+        self._visible_pings[idx] = {
+            "ping_type": ping_type,
+            "expires_tick": curr_tick + PING_DISPLAY_TICKS,
+        }
 
     def _route_ping_to_npc_bots(self, entry):
         """PingReactiveBot(= ping_queue 속성을 가진 정책)에 방금 들어온 핑을 즉시 전달."""
@@ -89,6 +115,23 @@ class PingMixin:
             if hasattr(policy, "note_step"):
                 policy.note_step()
         return super(PingMixin, self).tick()
+
+    def get_state(self):
+        # 원본 OvercookedGame.get_state()가 만드는 딕셔너리(potential/state/
+        # score/time_left)에 "pings" 필드만 얹는다. 이게 state_pong 이벤트로
+        # 그대로 클라이언트에 나가서 화면에 말풍선을 그리는 데 쓰인다.
+        state_dict = super(PingMixin, self).get_state()
+        curr_tick = getattr(self, "curr_tick", 0)
+        self._visible_pings = {
+            idx: info
+            for idx, info in self._visible_pings.items()
+            if info["expires_tick"] >= curr_tick
+        }
+        state_dict["pings"] = {
+            str(idx): info["ping_type"]
+            for idx, info in self._visible_pings.items()
+        }
+        return state_dict
 
 
 def build_ping_enabled_game_class():

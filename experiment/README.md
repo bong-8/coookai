@@ -74,19 +74,30 @@ pickle을 다시 불러와(서버의 `get_policy()`와 동일한 방식) 61스�
 Compatibility" 경고(다른 레이아웃에 쓰면 봇이 그냥 조용히 멈춰버림)에 걸리지
 않도록 실험 레이아웃을 봇이 있는 것 하나로 제한했다.
 
+## 클라이언트 핑 버튼 (완료)
+
+`static/templates/predefined.html`에 버튼 4개(`#ping-help/look/mine/ok`)를
+추가하고, `static/js/predefined.js`에 클릭 시 `socket.emit('action', {action:
+'PING_' + 타입})`을 보내는 핸들러를 달았다. 새 UI 요소가 아니라 **기존
+`enable_key_listener()`/`disable_key_listener()`와 나란히** `enable_ping_
+controls()`/`disable_ping_controls()`를 호출하도록 넣어서, 게임 시작/종료/재시작
+시점에 버튼이 자동으로 보이고 숨겨진다 (게임 중이 아닐 때 핑을 보낼 수 없게).
+`node --check`로 JS 문법, 태그 존재로 HTML 검증 완료. `index.js`/`tutorial.js`
+(자유 플레이/튜토리얼 페이지)는 이번 파일럿 경로가 아니라서 안 건드림.
+
+이걸로 Phase 2(핑 채널)가 서버·봇·클라이언트·로깅·지표계산까지 전부 연결됐다.
+남은 건 실제 무거운 의존성 환경에서 브라우저로 직접 플레이해보는 것뿐.
+
 ## 다음 작업 (우선순위 순)
 
-1. 파일럿에서 실제 쓸 레이아웃을 추가로 정하면, 그 레이아웃마다
-   `pickle_agent.py`를 한 번씩 더 돌려서 에이전트를 만들고
-   `config.json`의 `layouts`에도 추가.
-2. 클라이언트(JS) 쪽에서 핑 버튼 4개(`PING_HELP/LOOK/MINE/OK`)를 기존 액션
-   전송 함수로 그대로 보내도록 연결 (서버 쪽은 이미 이 문자열들을 처리함) —
-   버튼 UI 자체가 아직 없으므로 이게 남은 마지막 배선.
-3. `_PING_RESPONSE_MAP`과 `_respond_to_help()`의 실제 반응 규칙 확정 (지도교수 상담 필요 항목).
-4. 실제 Flask 서버 기동 검증 — ray/human_aware_rl 구버전 스택이 설치된 환경에서
+1. 실제 Flask 서버 기동 검증 — ray/human_aware_rl 구버전 스택이 설치된 환경에서
    `python app.py`로 띄워 브라우저로 직접 플레이해보는 것. 지금까지의 검증은
    전부 그 무거운 스택 없이 로직만 확인한 것이므로, 이 마지막 단계는 아직 안 됨.
-5. Phase 5 (실험 플로우) 착수.
+2. `_PING_RESPONSE_MAP`과 `_respond_to_help()`의 실제 반응 규칙 확정 (지도교수 상담 필요 항목).
+3. 파일럿에서 실제 쓸 레이아웃을 추가로 정하면, 그 레이아웃마다
+   `pickle_agent.py`를 한 번씩 더 돌려서 에이전트를 만들고
+   `config.json`의 `layouts`에도 추가.
+4. Phase 5 (실험 플로우) 착수.
 
 ## 알려진 이슈
 

@@ -44,7 +44,11 @@ from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
 
 from experiment.agents.role_restricted_bot import PingReactiveBot
 from experiment.analysis.compute_metrics import compute_all_metrics
-from experiment.server_ext.ping_game import PingMixin, VALID_PING_TYPES
+from experiment.server_ext.ping_game import (
+    PingMixin,
+    VALID_PING_TYPES,
+    PING_DISPLAY_TICKS,
+)
 
 
 # ── OvercookedGame의 계약을 흉내 내는 가짜 베이스 클래스 ──────────────────
@@ -95,6 +99,12 @@ class FakeOvercookedGame:
     def tick(self):
         self.curr_tick += 1
         return self.apply_actions()
+
+    def get_state(self):
+        # 원본 OvercookedGame.get_state()가 만드는 {potential, state, score,
+        # time_left} 딕셔너리를 최소한으로 흉내낸다. PingMixin.get_state()가
+        # 여기에 "pings" 필드를 얹는 걸 검증하는 게 목적.
+        return {"score": self.score, "time_left": 999}
 
 
 class TestGame(PingMixin, FakeOvercookedGame):
@@ -187,6 +197,32 @@ def test_tick_calls_note_step_on_bot():
     print("  PASS\n")
 
 
+def test_ping_appears_in_get_state():
+    print("=== Test 8: 핑을 보내면 get_state()의 'pings' 필드에 즉시 나타나는지 (화면 표시용) ===")
+    game = TestGame(players=["p1", "p2"])
+    assert game.get_state()["pings"] == {}
+    game.enqueue_action("p1", "PING_HELP")
+    state = game.get_state()
+    assert state["pings"] == {"0": "help"}, state  # p1은 players[0]
+    print("  PASS (인덱스 0에 'help'로 표시됨)\n")
+
+
+def test_ping_disappears_after_display_window():
+    print("=== Test 9: 화면 표시용 핑이 PING_DISPLAY_TICKS 이후 자동으로 사라지는지 ===")
+    game = TestGame(players=["p1", "p2"])
+    game.enqueue_action("p1", "PING_OK")
+    assert game.get_state()["pings"] == {"0": "ok"}
+
+    for _ in range(PING_DISPLAY_TICKS):
+        game.tick()
+    # 만료 시점 직전까지는 아직 보여야 함
+    assert game.get_state()["pings"] == {"0": "ok"}, "표시 기간 내인데 사라짐"
+
+    game.tick()
+    assert game.get_state()["pings"] == {}, "표시 기간이 지났는데 안 사라짐"
+    print("  PASS (표시 기간 동안 유지되다가 정확히 만료됨)\n")
+
+
 def test_end_to_end_logging_and_metrics():
     print("=== Test 7 (End-to-End): 핑 채널 -> trajectory 로깅 -> compute_metrics.py 연결 테스트 ===")
     bot = make_bot()
@@ -229,5 +265,7 @@ if __name__ == "__main__":
     test_pings_land_in_trajectory()
     test_ping_routes_to_real_reactive_bot()
     test_tick_calls_note_step_on_bot()
+    test_ping_appears_in_get_state()
+    test_ping_disappears_after_display_window()
     test_end_to_end_logging_and_metrics()
     print("Phase 2 전체(핑 채널 + 봇 반응 + 로깅 + 지표 계산) 테스트 통과.")
