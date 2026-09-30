@@ -134,22 +134,31 @@ class PingMixin:
         return state_dict
 
 
-def build_ping_enabled_game_class():
+def build_ping_enabled_game_class(overcooked_game_cls):
     """
-    실제 overcooked_demo 서버 환경(ray/human_aware_rl 설치된 곳)에서만 호출.
     app.py에서 OvercookedGame 대신 이 함수가 반환하는 클래스를 인스턴스화하면 됨:
 
+        import game  # app.py가 이미 하고 있는 그 import
         from experiment.server_ext.ping_game import build_ping_enabled_game_class
-        PingEnabledGame = build_ping_enabled_game_class()
-        game = PingEnabledGame(...)  # 원본 OvercookedGame과 생성자 동일
+        PingEnabledGame = build_ping_enabled_game_class(game.OvercookedGame)
+        g = PingEnabledGame(...)  # 원본 OvercookedGame과 생성자 동일
 
-    무거운 의존성 체인(ray, gym, human_aware_rl.rllib.rllib) 때문에 import를
-    모듈 최상단이 아니라 이 함수 안으로 미뤄서, 이 파일 자체는 경량 venv에서도
-    항상 import 가능하게 유지한다 (테스트에서 PingMixin만 쓰기 위함).
+    반드시 app.py가 **자기 자신이 import한 그 OvercookedGame 클래스**를 넘겨야
+    한다 (직접 `from overcooked_demo.server.game import ...`처럼 이 함수 안에서
+    따로 import하면 안 됨). 이유: app.py는 서버 디렉터리에서 `import game`으로
+    불러오는데, 그 경로가 아닌 다른 경로(`overcooked_demo.server.game` 같은
+    패키지 경로)로 같은 파일을 다시 import하면 파이썬이 완전히 별개의 모듈
+    인스턴스를 또 만든다. game.py는 `game._configure(MAX_GAME_TIME, AGENT_DIR)`
+    로 모듈 전역 변수를 채우는데, 그 설정이 app.py가 쓰는 모듈 인스턴스에만
+    적용되고 우리가 새로 import한 인스턴스는 여전히 MAX_GAME_TIME=None인 채로
+    남는다 — 실제로 이 버그로 게임 생성이 매번
+    "TypeError('<' not supported between NoneType and int)"로 실패하는 걸
+    실제 서버를 띄워서 확인했다(OvercookedGame.__init__의
+    `min(int(gameTime), MAX_GAME_TIME)`). 그래서 이 함수는 이제 클래스를
+    인자로 받아서, app.py가 쓰는 것과 항상 같은 모듈 인스턴스를 base로 쓴다.
     """
-    from overcooked_demo.server.game import OvercookedGame
 
-    class PingEnabledGame(PingMixin, OvercookedGame):
+    class PingEnabledGame(PingMixin, overcooked_game_cls):
         def __init__(self, *args, **kwargs):
             super(PingEnabledGame, self).__init__(*args, **kwargs)
             self._ping_init()

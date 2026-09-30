@@ -29,7 +29,11 @@ from utils import ThreadSafeDict, ThreadSafeSet
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from experiment.server_ext.ping_game import build_ping_enabled_game_class
 
-PingEnabledGame = build_ping_enabled_game_class()
+# OvercookedGame(위에서 이미 import한 바로 그 클래스)을 넘긴다. ping_game.py의
+# build_ping_enabled_game_class() 자체가 이 함수 안에서 game.py를 다시
+# import하면 안 되는 이유(별도 모듈 인스턴스 → MAX_GAME_TIME=None 버그)를
+# 설명해뒀다 — 실제로 서버를 띄워서 재현하고 고친 버그다.
+PingEnabledGame = build_ping_enabled_game_class(OvercookedGame)
 
 ### Thoughts -- where I'll log potential issues/ideas as they come up
 # Should make game driver code more error robust -- if overcooked randomlly errors we should catch it and report it to user

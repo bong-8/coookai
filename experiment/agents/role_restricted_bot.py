@@ -35,6 +35,33 @@ class RoleRestrictedBot(GreedyHumanModel):
         super().__init__(mlam, **kwargs)
         self.excluded_roles = set(excluded_roles or [])
 
+    def reset(self):
+        """
+        실제 서버(overcooked_demo/server/game.py)에서 발견한 버그의 고정:
+        원본 Agent.reset()(부모의 부모)은 self.agent_index = None으로 되돌린다
+        ("트라젝토리 롤아웃 사이에 항상 reset해야 한다"는 원본 주석대로, 매
+        롤아웃마다 actions()가 set_agent_index()를 다시 호출해주는 사용 패턴을
+        전제로 한 설계). 그런데 이 데모 서버는 OvercookedGame.activate()에서
+        게임을 시작할 때마다 무조건 npc_policy.reset()을 호출하고, 그 이후로는
+        다시 set_agent_index()를 불러주지 않는다 (pickle로 로드된 에이전트는
+        그 시점의 agent_index를 계속 갖고 있을 거라 가정함 — game.py의
+        get_policy()가 Rllib 에이전트에는 agent_index=idx를 넘겨주는 것도
+        그 전제 때문). 실제 Rllib용 RlLibAgent(human_aware_rl/rllib/rllib.py)를
+        보면 reset()을 완전히 새로 정의해서 super().reset()을 아예 호출하지
+        않는 방식으로 이 문제를 피해간다.
+
+        우리는 GreedyHumanModel.reset()이 하는 다른 일(prev_state 초기화 등)은
+        그대로 두고 싶으므로, agent_index만 저장했다가 복원하는 방식을 쓴다.
+        이 버그는 FakeOvercookedGame 기반 단위 테스트(test_ping_logic.py)로는
+        절대 잡을 수 없었다 — 실제 game.py의 activate()를 타야만 재현되는데,
+        실제 Flask 서버를 처음 띄워서 브라우저 대신 socketio 클라이언트로
+        게임을 시작해보다가(Phase 3 기동 검증) 발견했다.
+        """
+        saved_agent_index = getattr(self, "agent_index", None)
+        super().reset()
+        if saved_agent_index is not None:
+            self.agent_index = saved_agent_index
+
     def ml_action(self, state):
         # 부모 클래스가 어떤 액션 카테고리에서 목표를 만들었는지 알 수 없으므로,
         # 카테고리별로 직접 재계산 후 제외 목록을 뺀 나머지만 합쳐서 반환한다.
