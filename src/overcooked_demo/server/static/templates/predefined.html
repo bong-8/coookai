@@ -25,7 +25,23 @@
   <body>
     <div id="uid" style="display:none;">{{uid}}</div>
     <div id="config" style="display:none;">{{config}}</div>
-    <div id="overcooked-container" class="text-center">
+
+    <!-- 접속하자마자 바로 게임이 시작되지 않도록 막는 안내 화면.
+         "시작하기" 버튼을 눌러야 predefined.js가 join을 보낸다. -->
+    <div id="start-screen" class="text-center" style="margin-top: 40px;">
+        <h2>실험 안내</h2>
+        <p>
+            총 {{ num_layouts }}개의 난이도를 순서대로 진행합니다.<br>
+            방향키로 이동, 스페이스바로 상호작용(줍기/놓기/요리 시작)합니다.<br>
+            화면 하단의 버튼으로 상대(AI)에게 간단한 의사를 전달할 수 있습니다.
+        </p>
+        <p>
+            <a href="./instructions" target="_blank">게임 방법 자세히 보기</a>
+        </p>
+        <button id="start-btn" class="btn btn-primary btn-lg">시작하기</button>
+    </div>
+
+    <div id="overcooked-container" class="text-center" style="display:none;">
         <h4 id="game-title" style="display:none">Game in Progress</h4>
         <h4 id="game-over" style="display:none">Game Over</h4>
         <div id="overcooked"></div>

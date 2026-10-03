@@ -106,6 +106,17 @@ class FakeOvercookedGame:
         # 여기에 "pings" 필드를 얹는 걸 검증하는 게 목적.
         return {"score": self.score, "time_left": 999}
 
+    def activate(self):
+        # 원본 OvercookedGame.activate()가 라운드 시작 시 self.layouts에서
+        # 다음 레이아웃을 꺼내 self.mdp를 바꿔주는 부분만 흉내낸다.
+        # PingMixin.activate()가 이 호출보다 "먼저" npc_policies에
+        # update_for_layout을 전파하는지(순서가 핵심 — 실제 서버에서 레이스
+        # 컨디션으로 발견된 버그) 검증하는 게 목적.
+        self.activate_call_count = getattr(self, "activate_call_count", 0) + 1
+        if getattr(self, "layouts", None):
+            self.curr_layout = self.layouts.pop()
+        self.mdp = getattr(self, "_next_mdp", "fake_mdp_for_test")
+
 
 class TestGame(PingMixin, FakeOvercookedGame):
     def __init__(self, *args, **kwargs):
@@ -223,6 +234,73 @@ def test_ping_disappears_after_display_window():
     print("  PASS (표시 기간 동안 유지되다가 정확히 만료됨)\n")
 
 
+def test_activate_propagates_new_mdp_to_policies_with_update_hook():
+    print("=== Test 10: activate()가 '다음' 레이아웃의 mdp를 super().activate() "
+          "(=새 npc_policy_consumer 스레드 시작) 호출보다 먼저, update_for_layout "
+          "훅이 있는 정책에만 전달하는지 (레이스 컨디션으로 발견된 버그의 회귀 방지) ===")
+
+    class FakePolicyWithHook:
+        def __init__(self):
+            self.received = []
+            # 업데이트가 호출된 시점에 아직 super().activate()(curr_layout pop)가
+            # 실행되기 "전"이었는지 기록 — 순서가 거꾸로면 레이스 컨디션 버그 재발.
+            self.called_before_super_activate = None
+
+        def update_for_layout(self, mdp):
+            self.received.append(mdp)
+
+    class FakePolicyWithoutHook:
+        pass  # ping_queue도 note_step도 update_for_layout도 없는 일반 정책 흉내
+
+    hooked = FakePolicyWithHook()
+    plain = FakePolicyWithoutHook()
+    game = TestGame(
+        players=["human_0", "bot_1", "bot_2"],
+        npc_policies={"bot_1": hooked, "bot_2": plain},
+    )
+    game.layouts = ["cramped_room", "coordination_ring"]  # pop()은 뒤에서부터
+    game.mdp_params = {}
+    game.activate()
+
+    # super().activate()(=FakeOvercookedGame.activate())가 호출되기 전에
+    # 이미 update_for_layout이 불렸어야 하므로, FakeOvercookedGame.activate()
+    # 쪽에서 pop한 curr_layout은 "coordination_ring"(다음 레이아웃)이고,
+    # 정책이 받은 mdp도 바로 그 레이아웃이어야 한다 — 둘이 일치해야
+    # "먼저 계산해서 넘겨준 것"이 실제로 맞게 계산됐다는 뜻.
+    assert game.curr_layout == "coordination_ring", game.curr_layout
+    assert len(hooked.received) == 1
+    assert hooked.received[0].layout_name == "coordination_ring", hooked.received[0]
+    assert game.layouts == ["cramped_room"], "다음 레이아웃을 미리 들여다보기만 하고 "\
+        "실제 pop은 여전히 super().activate() 쪽에서 1번만 일어나야 함"
+    # update_for_layout이 없는 정책은 그냥 조용히 건너뛰어야 함 (에러 없음)
+    assert not hasattr(plain, "update_for_layout")
+    print("  PASS (super().activate() 전에 다음 레이아웃 mdp를 정확히 계산해서 "
+          "훅이 있는 정책에만 전달, pop은 한 번만 일어남)\n")
+
+
+def test_real_bot_update_for_layout_rebuilds_mlam_for_new_layout():
+    print("=== Test 11 (실제 봇): RoleRestrictedBot.update_for_layout()이 레이아웃이 "
+          "바뀌면 실제로 그 레이아웃에 맞는 mlam으로 교체되는지 ===")
+    from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld as _OG
+
+    mdp_a = _OG.from_layout_name("cramped_room")
+    mlam_a = MediumLevelActionManager(mdp_a, NO_COUNTERS_PARAMS)
+    bot = PingReactiveBot(mlam_a, excluded_roles=["deliver"], ping_queue=deque())
+    bot.set_agent_index(1)
+    assert bot.mlam.mdp.layout_name == "cramped_room"
+
+    mdp_b = _OG.from_layout_name("coordination_ring")
+    bot.update_for_layout(mdp_b)
+
+    assert bot.mlam.mdp.layout_name == "coordination_ring", (
+        "레이아웃이 바뀐 뒤에도 이전 레이아웃(cramped_room) mlam을 그대로 쓰고 있음"
+    )
+    # agent_index처럼 유지돼야 하는 상태가 실수로 날아가지 않았는지도 확인
+    assert bot.agent_index == 1
+    assert bot.excluded_roles == {"deliver"}
+    print("  PASS (mlam이 coordination_ring 전용으로 교체됨, agent_index/excluded_roles 유지)\n")
+
+
 def test_end_to_end_logging_and_metrics():
     print("=== Test 7 (End-to-End): 핑 채널 -> trajectory 로깅 -> compute_metrics.py 연결 테스트 ===")
     bot = make_bot()
@@ -267,5 +345,7 @@ if __name__ == "__main__":
     test_tick_calls_note_step_on_bot()
     test_ping_appears_in_get_state()
     test_ping_disappears_after_display_window()
+    test_activate_propagates_new_mdp_to_policies_with_update_hook()
+    test_real_bot_update_for_layout_rebuilds_mlam_for_new_layout()
     test_end_to_end_logging_and_metrics()
     print("Phase 2 전체(핑 채널 + 봇 반응 + 로깅 + 지표 계산) 테스트 통과.")

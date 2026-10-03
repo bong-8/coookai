@@ -162,14 +162,91 @@ controls()`/`disable_ping_controls()`를 호출하도록 넣어서, 게임 시�
 눈으로 확인하는 것뿐** — 서버·봇·로깅·화면표시 데이터 파이프라인 자체는
 이제 실제 서버로 end-to-end 검증됨.
 
+## 로컬(비 Docker) 환경에서 실행하는 법 (2026-09-30 추가)
+
+`python app.py`로 Docker 없이 직접 실행할 때만 필요한 추가 단계:
+
+```bash
+# 1. 프로젝트 설치 (human_aware_rl이 src/ 밑에 있는 걸 파이썬이 찾게 해줌)
+pip install -e .
+
+# 2. 무거운 RL 스택(실제로 학습은 안 하지만 game.py가 import는 함) + 구버전 socket.io 스택
+pip install "ray[rllib,tune]==2.2" gym
+pip install Flask-SocketIO==4.3.0 python-socketio==4.6.0 python-engineio==3.13.0 \
+    Werkzeug==2.0.3 Jinja2==3.1.0 click==8.0.0 itsdangerous==2.0.0 MarkupSafe==2.0.0 \
+    Flask==2.1.3 eventlet==0.41.2 "setuptools==79.0.1"
+# (setuptools는 최신 버전을 깔면 pkg_resources가 빠져있어 ray가 깨짐 — 꼭 이 버전으로)
+
+# 3. Docker 빌드 때만 자동으로 복사되는 그래픽 파일을 수동으로 복사
+#    (이거 안 하면 소켓/게임 로직은 다 되는데 Phaser 캔버스가 안 뜸 —
+#    실제 브라우저로 처음 테스트할 때 발견)
+cp graphics/overcooked_graphics_v2.2.js static/js/graphics.js   # src/overcooked_demo/server/ 안에서 실행
+
+# 4. 서버 실행
+cd src/overcooked_demo/server
+PORT=5001 HOST=127.0.0.1 FLASK_ENV=production python app.py
+```
+
+`http://127.0.0.1:5001/predefined` 접속 → "시작하기" 버튼을 눌러야 게임이 시작됨
+(접속 즉시 자동 시작되던 것을 안내 화면 추가로 수정, 아래 참고).
+
+## 접속 즉시 게임이 시작되던 문제 수정 (완료, 2026-10-03)
+
+실제 브라우저로 처음 플레이해보니, `predefined.html`에 접속하자마자
+(`socket.on("connect", ...)`에서 바로 `join`을 보내서) 참가자가 준비할 틈도 없이
+게임이 시작돼버렸다. `#start-screen`(안내 문구 + "시작하기" 버튼 + 게임 방법
+링크)을 추가하고, 버튼을 눌러야 `join`을 보내도록 `predefined.js`를 수정했다.
+
+## 난이도(레이아웃) 5단계 + 레이아웃 전환 버그 수정 (완료, 2026-10-03)
+
+`config.json`의 `predefined.experimentParams`를 원본 논문/공식 데모가 쓰는
+쉬움→어려움 5단계로 확장:
+`cramped_room → asymmetric_advantages → coordination_ring → forced_coordination → counter_circuit`,
+레이아웃당 `gameTime: 150`초 (`randomized: false`로 순서 고정, `MAX_GAME_LENGTH`도
+150보다 작게 걸려있던 것을 200으로 올림). `game.py`의 `layouts` 배열은 한 세션
+안에서 라운드를 순서대로 이어서 진행해주는 원본 기능을 그대로 쓴 것 — 서버 쪽
+코드는 안 건드림.
+
+다만 여기서 **진짜 버그 하나를 더 발견·수정**했다 (역시 실제 서버로 직접
+재현하기 전까지는 안 보이던 것): `playerOne`(우리 봇)은 세션 전체에서 **에이전트
+객체 하나만** 계속 쓰이는데, 그 봇의 의사결정(`ml_action()`)은 특정 레이아웃
+지형에 맞춰 미리 계산된 `mlam`(MediumLevelActionManager)에 의존한다. 레이아웃이
+바뀌어도 원본 서버는 이 mlam을 안 바꿔주므로, 2번째 레이아웃부터는 봇이 "이전"
+레이아웃 지형 기준으로 판단해버린다.
+
+1. **1차 수정**: `RoleRestrictedBot.update_for_layout(mdp)` 추가(새 레이아웃에
+   맞는 mlam을 `MediumLevelActionManager.from_pickle_or_compute`로 재계산 —
+   디스크 캐시를 쓰므로 같은 레이아웃이면 두 번째부터는 빠름), `PingMixin.activate()`
+   에서 이 훅이 있는 정책에 새 mdp를 전달하도록 함.
+2. **레이스 컨디션 발견**: 1차 수정을 실제 서버로 5레이아웃 연속 테스트해보니
+   여전히 레이아웃 전환 직후 `AssertionError: Node 1 cc: [] / Node 2 cc: [0]`로
+   NPC 정책 스레드가 죽었다. 원인은 순서였다 — `OvercookedGame.activate()`는
+   `self.mdp`를 새로 설정하자마자 그 안에서 바로 새 `npc_policy_consumer`
+   스레드를 띄우고 시작 상태를 큐에 넣는데, 당시 `update_for_layout()` 호출은
+   `super().activate()` 이후였다. 그 새 스레드가 (갱신되기 전) 옛 mlam으로
+   새 상태를 처리해버리는 레이스가 실제로 발생.
+   **최종 수정**: `super().activate()`를 부르기 **전에** `self.layouts[-1]`
+   (아직 pop 안 한, 다음에 쓸 레이아웃)을 미리 들여다보고 그 mdp를 계산해서
+   정책들에 먼저 넘긴 뒤에 `super().activate()`를 호출하도록 순서를 바꿨다.
+   실제 서버로 5레이아웃을 끝까지(`reset_game` 4회, 레이아웃 전환마다 1회)
+   에러 없이 통과하는 것까지 확인.
+
+`test_ping_logic.py`에 이 순서 보장을 검증하는 테스트(Test 10)와, 실제
+`RoleRestrictedBot.update_for_layout()`이 레이아웃이 바뀌면 진짜로 mlam을
+교체하는지 확인하는 테스트(Test 11)를 추가 — 총 12개 테스트 통과.
+`asymmetric_advantages`/`coordination_ring`/`forced_coordination`/
+`counter_circuit`용 봇 pickle도 미리 만들어뒀지만(`RuleBasedBot_*`),
+구조상 `playerOne` 봇 하나(`RuleBasedBot_CrampedRoom`)가 `update_for_layout()`
+덕분에 5개 레이아웃을 전부 커버하므로 지금 당장은 안 써도 됨 — 나중에
+레이아웃마다 다른 봇 설정(예: 제외 역할을 다르게)을 쓰고 싶을 때를 위해 남겨둠.
+
 ## 다음 작업 (우선순위 순)
 
-1. 실제 브라우저로 직접 플레이해서 말풍선 표시(`overcooked_graphics_v2.2.js`의
-   `_drawPings()`)가 실제로 의도한 위치/모양으로 렌더링되는지 육안 확인.
+1. 실제 브라우저로 5개 레이아웃을 끝까지 직접 플레이해서 말풍선 표시, 난이도
+   전환, 150초 타이머가 전부 의도대로 보이는지 육안 확인.
 2. `_PING_RESPONSE_MAP`과 `_respond_to_help()`의 실제 반응 규칙 확정 (지도교수 상담 필요 항목).
-3. 파일럿에서 실제 쓸 레이아웃을 추가로 정하면, 그 레이아웃마다
-   `pickle_agent.py`를 한 번씩 더 돌려서 에이전트를 만들고
-   `config.json`의 `layouts`에도 추가.
+3. "Deterministic?" 같은 원본 공식 데모의 다른 옵션들, "Replay Trajectories"
+   기능 도입 여부 검토 (우선순위 낮음, 지금 당장 필수는 아님).
 4. Phase 5 (실험 플로우) 착수.
 
 ## 알려진 이슈

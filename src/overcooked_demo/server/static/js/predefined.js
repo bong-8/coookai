@@ -225,17 +225,24 @@ function disable_ping_controls() {
 socket.on("connect", function() {
     // set configuration variables
     set_config();
+});
 
-    // Config for this specific game
-    let uid = $('#uid').text();
-    let params = JSON.parse(JSON.stringify(config.experimentParams));
-    let data = {
-        "params" : params,
-        "game_name" : "overcooked"
-    };
+// 접속 직후 바로 게임이 시작되지 않도록, "시작하기" 버튼을 눌러야
+// join을 보낸다 (안내 화면 참고: static/templates/predefined.html의 #start-screen).
+$(function() {
+    $('#start-btn').click(function () {
+        $('#start-screen').hide();
+        $('#overcooked-container').show();
 
-    // create (or join if it exists) new game
-    socket.emit("join", data);
+        let params = JSON.parse(JSON.stringify(config.experimentParams));
+        let data = {
+            "params" : params,
+            "game_name" : "overcooked"
+        };
+
+        // create (or join if it exists) new game
+        socket.emit("join", data);
+    });
 });
 
 

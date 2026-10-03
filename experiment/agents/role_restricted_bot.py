@@ -14,6 +14,10 @@ import time
 from collections import deque, defaultdict
 
 from overcooked_ai_py.agents.agent import GreedyHumanModel
+from overcooked_ai_py.planning.planners import (
+    MediumLevelActionManager,
+    NO_COUNTERS_PARAMS,
+)
 
 
 # ── Phase 1: 역할 제한 ──────────────────────────────────────────────
@@ -61,6 +65,31 @@ class RoleRestrictedBot(GreedyHumanModel):
         super().reset()
         if saved_agent_index is not None:
             self.agent_index = saved_agent_index
+
+    def update_for_layout(self, mdp):
+        """
+        레이아웃이 여러 개(config.json의 "layouts" 배열)인 세션에서, 서버가
+        한 라운드가 끝나고 다음 레이아웃으로 넘어갈 때 호출해줘야 하는 훅.
+
+        이 봇의 ml_action()은 전부 self.mlam(MediumLevelActionManager)을
+        거쳐 동작하는데, mlam은 생성 시점의 레이아웃 지형(카운터 위치, 냄비
+        위치, 이동 가능 경로 등)에 맞춰 미리 계산되는 객체라 다른 레이아웃에는
+        그대로 못 쓴다(README의 "Layout Compatibility" 경고와 같은 이유).
+        pickle로 저장할 때 baked-in된 mlam은 그 레이아웃 전용이므로, 세션
+        중간에 레이아웃이 바뀌면 이 메서드로 새 mdp에 맞는 mlam으로 교체해야
+        한다. 계산 비용을 줄이기 위해 MediumLevelActionManager.from_pickle_or_compute
+        를 써서, 같은 레이아웃이면 디스크 캐시를 재사용한다(pickle_agent.py가
+        쓰는 방식과 동일).
+
+        호출 지점: experiment/server_ext/ping_game.py의 PingMixin.activate()
+        오버라이드 — 원본 OvercookedGame.activate()가 라운드마다 self.mdp를
+        새로 설정한 직후, ping_queue 속성 확인과 같은 방식(hasattr 덕 타이핑)
+        으로 이 메서드가 있는 정책에만 호출해준다.
+        """
+        self.mlam = MediumLevelActionManager.from_pickle_or_compute(
+            mdp, NO_COUNTERS_PARAMS
+        )
+        self.mdp = mdp
 
     def ml_action(self, state):
         # 부모 클래스가 어떤 액션 카테고리에서 목표를 만들었는지 알 수 없으므로,

@@ -116,6 +116,44 @@ class PingMixin:
                 policy.note_step()
         return super(PingMixin, self).tick()
 
+    def activate(self):
+        # 여러 레이아웃(config.json의 "layouts" 배열)이 한 세션 안에서
+        # 순서대로 진행될 때, 원본 OvercookedGame.activate()는 매 라운드
+        # self.mdp를 새 레이아웃 것으로 바꿔주지만 npc_policies(우리 봇)는
+        # 건드리지 않는다. RoleRestrictedBot.ml_action()은 self.mlam에
+        # 의존하는데 mlam은 특정 레이아웃 지형에 맞춰 미리 계산된 거라,
+        # 안 바꿔주면 레이아웃이 바뀌는 순간부터 봇이 이전 레이아웃 지형
+        # 기준으로 동작해버린다(실제 서버로 5개 레이아웃 순환을 테스트하다
+        # 발견).
+        #
+        # 중요: 이 업데이트는 반드시 super().activate()보다 **먼저** 일어나야
+        # 한다. 처음에는 super() 호출 "이후"에 self.mdp를 읽어서 넘겨줬는데,
+        # 실제 서버로 재현해보니 레이스 컨디션이 있었다 — OvercookedGame.
+        # activate()는 self.mdp를 새로 설정하자마자 그 안에서 바로
+        # npc_policy_consumer 스레드를 새로 띄우고 시작 상태를 큐에 넣는다.
+        # 그 스레드가 (아직 우리가 update_for_layout을 호출하기 전에) 바로
+        # 그 상태를 꺼내 policy.action()을 불러버리면, 봇은 여전히 "이전"
+        # 레이아웃의 mlam으로 "새" 레이아웃의 상태를 해석하게 되고, 그 결과
+        # 좌표가 mlam의 이동 그래프에 아예 없어서
+        # `AssertionError: Node 1 cc: [] / Node 2 cc: [0]`로 스레드가 죽는
+        # 걸 실제 5레이아웃 연속 테스트에서 확인했다. 그래서 여기서는
+        # super().activate()가 self.layouts.pop()으로 꺼낼 "다음" 레이아웃을
+        # 먼저(pop 하지 않고) 들여다보고, 그 레이아웃의 mdp를 미리 계산해
+        # 정책들에 넘긴 "다음" super().activate()를 부른다 — 새 스레드가
+        # 시작될 때는 이미 정책이 새 레이아웃 기준으로 준비돼있다.
+        layouts = getattr(self, "layouts", None)
+        if layouts:
+            next_layout_name = layouts[-1]  # self.layouts.pop()과 동일한 다음 원소
+            from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
+
+            next_mdp = OvercookedGridworld.from_layout_name(
+                next_layout_name, **(getattr(self, "mdp_params", None) or {})
+            )
+            for policy in getattr(self, "npc_policies", {}).values():
+                if hasattr(policy, "update_for_layout"):
+                    policy.update_for_layout(next_mdp)
+        super(PingMixin, self).activate()
+
     def get_state(self):
         # 원본 OvercookedGame.get_state()가 만드는 딕셔너리(potential/state/
         # score/time_left)에 "pings" 필드만 얹는다. 이게 state_pong 이벤트로
