@@ -71,6 +71,23 @@ MAX_GAMES = CONFIG["MAX_GAMES"]
 # Frames per second cap for serving to client
 MAX_FPS = CONFIG["MAX_FPS"]
 
+# 원본 코드에서 MAX_FPS는 로드만 되고 실제로는 어디에도 쓰이지 않았다 —
+# 게임 시뮬레이션 틱 속도는 app.py 두 군데(on_create/on_join)에서
+# `socketio.start_background_task(play_game, game, fps=6)`처럼 6이 하드코딩
+# 되어 있었다(= 초당 6번만 상태가 갱신됨, 약 167ms 간격). "유저 조작이
+# 매끄럽지 않다"는 실제 플레이테스트 피드백의 핵심 원인이 여기였다 — 방향키를
+# 아무리 자주 보내도 서버가 1초에 6번만 반영하니, 사람이 기대하는 끊김 없는
+# 움직임과는 거리가 있었다(클라이언트 글라이드 애니메이션도 167ms 중 50ms만
+# 움직이고 나머지는 멈춰 보임). game.py의 is_finished()는 틱 수가 아니라
+# time()(실제 시계)로 제한시간을 재므로(gameTime=150초는 그대로 150초),
+# 틱 속도를 올려도 "게임이 더 빨리 끝나는" 부작용은 없다. 그래서 이 값을
+# 실제로 play_game()에 연결해서 의미 있게 만들고, config.json에서
+# 10(≈100ms 간격)으로 올렸다 — 6→30처럼 과격하게 올리면 서버 부하도
+# 커지고, 핑 반응 유효시간(role_restricted_bot.py의 REACTION_DELAY_STEPS,
+# "스텝" 단위라 틱 속도에 비례해 실제 시간이 줄어듦)도 너무 짧아지므로
+# 보수적으로 10을 택했다(그에 맞춰 REACTION_DELAY_STEPS도 같이 조정함).
+GAME_TICK_FPS = MAX_FPS
+
 # Default configuration for predefined experiment
 PREDEFINED_CONFIG = json.dumps(CONFIG["predefined"])
 
@@ -300,7 +317,7 @@ def _create_game(user_id, game_name, params={}):
                 {"spectating": spectating, "start_info": game.to_json()},
                 room=game.id,
             )
-            socketio.start_background_task(play_game, game, fps=6)
+            socketio.start_background_task(play_game, game, fps=GAME_TICK_FPS)
         else:
             WAITING_GAMES.put(game.id)
             emit("waiting", {"in_game": True}, room=game.id)
@@ -600,7 +617,9 @@ def on_join(data):
                         {"spectating": False, "start_info": game.to_json()},
                         room=game.id,
                     )
-                    socketio.start_background_task(play_game, game)
+                    socketio.start_background_task(
+                        play_game, game, fps=GAME_TICK_FPS
+                    )
                 else:
                     # Still need to keep waiting for players
                     WAITING_GAMES.put(game.id)

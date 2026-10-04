@@ -7,8 +7,18 @@ Added state potential to HUD
 
 
 // How long a graphics update should take in milliseconds
-// Note that the server updates at 30 fps
-var ANIMATION_DURATION = 50;
+//
+// 원래 주석은 "서버가 30fps로 갱신한다"였지만 실제로는(2026-10-04 확인)
+// app.py의 play_game 루프가 6fps(약 167ms 간격)로 하드코딩되어 있었다 —
+// config.json의 MAX_FPS=30은 로드만 되고 어디에도 안 쓰이는 죽은 값이었다.
+// 그 상태에서 ANIMATION_DURATION=50ms였으니, 한 틱(167ms)마다 캐릭터가
+// 50ms 동안만 미끄러지듯 움직이고 나머지 117ms는 가만히 서 있는 것처럼
+// 보였다 — "유저 조작이 매끄럽지 않다"는 피드백의 실제 원인 중 하나.
+// app.py에서 틱 속도를 실제로 10fps(약 100ms 간격)로 올렸으므로, 그에
+// 맞춰 애니메이션 길이도 늘려 한 틱의 대부분을 글라이드가 채우게 했다
+// (다음 상태가 네트워크 지연으로 늦게 와도 트윈이 끊기지 않도록 약간의
+// 여유만 남김).
+var ANIMATION_DURATION = 85;
 
 var DIRECTION_TO_NAME = {
     '0,-1': 'NORTH',
@@ -410,9 +420,11 @@ class OvercookedScene extends Phaser.Scene {
         }
     }
 
-    // 오더를 "양파 수프 x2" 같은 한국어 텍스트로 바꿔서 보여준다 (원래는 작은
-    // 아이콘만 있어서 뭘 요구하는 주문인지 한눈에 안 들어온다는 피드백으로 추가).
-    // ingredients: [{"name": "onion"}, ...] 형태 -> 재료 구성별로 묶어서 개수 표시.
+    // 오더 표시: "양파 수프 x2" 텍스트로 바꿔봤다가 실제 플레이테스트에서
+    // "기존 아이콘 형태가 낫다"는 피드백을 받아 원본(공식 공개 데모) 그대로의
+    // 아이콘 렌더링으로 되돌렸다(2026-10-04). _orderIngredientsLabel/
+    // _ordersToText 두 헬퍼는 더 안 쓰이지만, 나중에 "아이콘 + 텍스트 라벨"
+    // 조합처럼 다시 쓸 수도 있어 남겨둔다.
     _orderIngredientsLabel(ingredients) {
         let names = ingredients.map(x => x['name']);
         let numOnion = names.filter(n => n === 'onion').length;
@@ -425,7 +437,6 @@ class OvercookedScene extends Phaser.Scene {
     }
 
     _ordersToText(orders) {
-        // 같은 구성의 오더가 여러 개면 "양파3 수프 x2"처럼 묶어서 보여준다.
         let counts = {};
         let order = [];
         for (let i = 0; i < orders.length; i++) {
@@ -441,9 +452,28 @@ class OvercookedScene extends Phaser.Scene {
 
     _drawBonusOrders(orders, sprites, board_height) {
         if (typeof(orders) !== 'undefined' && orders !== null) {
-            let orders_str = "Bonus Orders: " + this._ordersToText(orders);
+            let orders_str = "Bonus Orders: ";
             if (typeof(sprites['bonus_orders']) !== 'undefined') {
-                sprites['bonus_orders']['str'].setText(orders_str);
+                // Clear existing orders
+                sprites['bonus_orders']['orders'].forEach(element => {
+                    element.destroy();
+                });
+                sprites['bonus_orders']['orders'] = [];
+
+                // Update with new orders
+                for (let i = 0; i < orders.length; i++) {
+                    let spriteFrame = this._ingredientsToSpriteFrame(orders[i]['ingredients'], "done");
+                    let orderSprite = this.add.sprite(
+                        130 + 40 * i,
+                        board_height + 40,
+                        "soups",
+                        spriteFrame
+                    );
+                    sprites['bonus_orders']['orders'].push(orderSprite);
+                    orderSprite.setDisplaySize(60, 60);
+                    orderSprite.setOrigin(0);
+                    orderSprite.depth = 1;
+                }
             }
             else {
                 sprites['bonus_orders'] = {};
@@ -455,15 +485,35 @@ class OvercookedScene extends Phaser.Scene {
                         align: "left"
                     }
                 )
+                sprites['bonus_orders']['orders'] = []
             }
         }
     }
 
     _drawAllOrders(orders, sprites, board_height) {
         if (typeof(orders) !== 'undefined' && orders !== null) {
-            let orders_str = "All Orders: " + this._ordersToText(orders);
+            let orders_str = "All Orders: ";
             if (typeof(sprites['all_orders']) !== 'undefined') {
-                sprites['all_orders']['str'].setText(orders_str);
+                // Clear existing orders
+                sprites['all_orders']['orders'].forEach(element => {
+                    element.destroy();
+                });
+                sprites['all_orders']['orders'] = [];
+
+                // Update with new orders
+                for (let i = 0; i < orders.length; i++) {
+                    let spriteFrame = this._ingredientsToSpriteFrame(orders[i]['ingredients'], "done");
+                    let orderSprite = this.add.sprite(
+                        90 + 40 * i,
+                        board_height - 4,
+                        "soups",
+                        spriteFrame
+                    );
+                    sprites['all_orders']['orders'].push(orderSprite);
+                    orderSprite.setDisplaySize(60, 60);
+                    orderSprite.setOrigin(0);
+                    orderSprite.depth = 1;
+                }
             }
             else {
                 sprites['all_orders'] = {};
@@ -475,6 +525,7 @@ class OvercookedScene extends Phaser.Scene {
                         align: "left"
                     }
                 )
+                sprites['all_orders']['orders'] = []
             }
         }
     }

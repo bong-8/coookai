@@ -335,6 +335,62 @@ def test_help_ping_clears_all_exclusions():
     print("  PASS (처리 중엔 제한 전부 해제, 끝나면 원래대로 복원)\n")
 
 
+def test_bot_drops_undeliverable_soup_on_counter_instead_of_stalling():
+    print("=== Test 13: excluded_roles=['deliver']인 채로 완성된 수프를 들면, "
+          "배달 대신 카운터에 내려놓고 멈추지 않는지 (실제 플레이테스트에서 "
+          "'접시를 든 채 그대로 고장난다'는 피드백으로 발견된 버그의 회귀 방지) ===")
+    from overcooked_ai_py.mdp.overcooked_mdp import (
+        OvercookedGridworld as _OG,
+        SoupState as _SoupState,
+    )
+    from experiment.agents.role_restricted_bot import build_mlam_params
+
+    mdp = _OG.from_layout_name("cramped_room")
+    # force_compute=True: 디스크에 예전(counter_drop=[] 였던 시절) 캐시가 남아
+    # 있어도 이 테스트는 항상 지금 build_mlam_params()로 새로 계산해서 검증한다.
+    mlam = MediumLevelActionManager.from_pickle_or_compute(
+        mdp, build_mlam_params(mdp), force_compute=True
+    )
+
+    state = mdp.get_standard_start_state()
+    p0 = state.players[0]
+    # 플레이어가 이미 "완성된 수프"(배달 직전 상태)를 들고 있는 상황을 만든다.
+    p0.set_object(
+        _SoupState.get_soup(p0.position, num_onions=3, num_tomatoes=0, finished=True)
+    )
+
+    bot = PingReactiveBot(mlam, excluded_roles=["deliver"], ping_queue=deque())
+    bot.set_agent_index(0)
+
+    # 실제 게임 루프처럼 여러 틱 굴려서, 봇이 정말로 내려놓는지(제자리에서
+    # 계속 들고만 있지 않는지) 끝까지 시뮬레이션한다. 상대(플레이어 1)는
+    # 가만히 둔다 — 이 테스트의 관심사가 아니므로.
+    from overcooked_ai_py.mdp.actions import Action
+
+    dropped = False
+    for _ in range(40):
+        action0, _ = bot.action(state)
+        state, _ = mdp.get_state_transition(state, (action0, Action.STAY))
+        if not state.players[0].has_object():
+            dropped = True
+            break
+
+    assert dropped, (
+        "40틱이 지나도록 봇이 수프를 계속 들고만 있음 — "
+        "place_obj_on_counter_actions()로 내려놓는 fallback이 동작하지 않음"
+    )
+
+    # 그냥 사라진 게 아니라 실제로 카운터 위에 놓였는지(= 사람이 집어서 마저
+    # 배달할 수 있는 상태인지)까지 확인한다.
+    objs_on_counters = mdp.get_counter_objects_dict(
+        state, mdp.get_counter_locations()
+    )
+    assert len(objs_on_counters.get("soup", [])) == 1, (
+        f"수프가 카운터 위에서 발견되지 않음: {objs_on_counters}"
+    )
+    print("  PASS (봇이 배달 대신 카운터에 수프를 내려놓고 멈추지 않음)\n")
+
+
 def test_end_to_end_logging_and_metrics():
     print("=== Test 7 (End-to-End): 핑 채널 -> trajectory 로깅 -> compute_metrics.py 연결 테스트 ===")
     bot = make_bot()
@@ -382,5 +438,6 @@ if __name__ == "__main__":
     test_activate_propagates_new_mdp_to_policies_with_update_hook()
     test_real_bot_update_for_layout_rebuilds_mlam_for_new_layout()
     test_help_ping_clears_all_exclusions()
+    test_bot_drops_undeliverable_soup_on_counter_instead_of_stalling()
     test_end_to_end_logging_and_metrics()
     print("Phase 2 전체(핑 채널 + 봇 반응 + 로깅 + 지표 계산) 테스트 통과.")

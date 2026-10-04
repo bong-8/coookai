@@ -20,6 +20,33 @@ from overcooked_ai_py.planning.planners import (
 )
 
 
+def build_mlam_params(mdp):
+    """
+    이 실험 봇 전용 MediumLevelActionManager 파라미터.
+
+    실제 플레이테스트에서 발견한 버그: NO_COUNTERS_PARAMS를 그대로 쓰면
+    "counter_drop": [] 라서(planners.py 정의 참고) place_obj_on_counter_actions()가
+    *항상* 빈 리스트를 반환한다 — 즉 봇이 카운터에 물건을 내려놓는 게 애초에
+    플래너 레벨에서 완전히 불가능한 상태였다. excluded_roles=["deliver"]인
+    채로 완성된 수프를 들고 있으면(ml_action()의 방어 로직 참고) 내려놓을
+    곳이 하나도 없어 제자리에서 멈춰버리는 버그로 이어졌다.
+
+    그래서 NO_COUNTERS_PARAMS를 베이스로 하되 counter_drop/counter_goals만
+    이 레이아웃의 모든 카운터 위치로 채운 파라미터를 쓴다 — "카운터에 뭔가를
+    내려놓을 수 있다"는 능력만 켜고, wait_allowed/counter_pickup 등 나머지
+    제약(=예측 가능성을 위해 의도적으로 좁힌 행동 공간, 3.4절 설계 철학)은
+    그대로 유지한다. MediumLevelActionManager.from_pickle_or_compute()는
+    params 내용이 바뀌면 디스크 캐시를 자동으로 무효화하고 다시 계산하므로
+    (planners.py의 `mlam.params != mlam_params` 체크), 기존에 캐시된
+    (counter_drop 없는) *_am.pkl이 남아 있어도 안전하게 새로 계산된다.
+    """
+    params = dict(NO_COUNTERS_PARAMS)
+    all_counters = mdp.get_counter_locations()
+    params["counter_drop"] = all_counters
+    params["counter_goals"] = all_counters
+    return params
+
+
 # ── Phase 1: 역할 제한 ──────────────────────────────────────────────
 class RoleRestrictedBot(GreedyHumanModel):
     """
@@ -87,7 +114,7 @@ class RoleRestrictedBot(GreedyHumanModel):
         으로 이 메서드가 있는 정책에만 호출해준다.
         """
         self.mlam = MediumLevelActionManager.from_pickle_or_compute(
-            mdp, NO_COUNTERS_PARAMS
+            mdp, build_mlam_params(mdp)
         )
         self.mdp = mdp
 
@@ -140,9 +167,34 @@ class RoleRestrictedBot(GreedyHumanModel):
         ]
 
         # 제외 로직 때문에 목표가 하나도 안 남으면(봇이 멈추면) 안 되므로
-        # 방어 로직으로 가장 가까운 feature로 이동하게 함 (원본 fallback과 동일)
+        # 방어 로직이 필요하다.
+        #
+        # 실제 플레이테스트에서 발견된 버그: excluded_roles=["deliver"]인 채로
+        # 봇이 완성된 수프(dish+soup)를 들고 있으면, 위 분기에서
+        # "deliver"가 제외되어 motion_goals가 비고, 예전에는 여기서
+        # go_to_closest_feature_actions(player)로 떨어졌다. 그런데 이 함수는
+        # 양파/토마토 디스펜서·냄비·접시 디스펜서 위치만 알고 서빙 윈도/카운터는
+        # 전혀 모른다(planners.py 정의 참고) — 즉 수프를 들고 있는 봇한테
+        # "가장 가까운 냄비로 가라"는, 가서 할 수 있는 일이 없는 목표를 준
+        # 것이다. 봇이 그 목표 지점에 도착하면 상태가 더 안 바뀌니 같은
+        # ml_action이 계속 나오고, 결국 GreedyHumanModel.action()의
+        # auto_unstuck(제자리에 멈춘 두 턴을 감지하면 무작위 행동을 주입하는
+        # 안전장치)이 계속 발동해 "접시를 든 채 제자리에서 계속 꿈틀거리기만
+        # 하고 아무것도 안 하는" 것처럼 보였다 — 네가 추측한 "접시를 못
+        # 내려놓아서"가 정확한 원인이었다.
+        #
+        # 고침: 뭔가를 들고 있는데(=player.has_object()) 그걸로 할 수 있는
+        # 다음 행동이 역할 제한 때문에 전부 막혀 있다면, "아무 데나 걷기"가
+        # 아니라 place_obj_on_counter_actions()로 빈 카운터 위에 내려놓게
+        # 한다. 그러면 사람 참가자가 그걸 집어서 마저 처리(예: 배달)할 수
+        # 있다 — "일부 역할은 의도적으로 사람의 몫으로 남긴다"는 3.4절 설계
+        # 철학과 정확히 들어맞는 동작이다. 아무것도 안 들고 있을 때의 기존
+        # fallback(go_to_closest_feature_actions)은 그대로 둔다.
         if len(motion_goals) == 0:
-            motion_goals = am.go_to_closest_feature_actions(player)
+            if player.has_object():
+                motion_goals = am.place_obj_on_counter_actions(state)
+            else:
+                motion_goals = am.go_to_closest_feature_actions(player)
             motion_goals = [
                 mg for mg in motion_goals
                 if self.mlam.motion_planner.is_valid_motion_start_goal_pair(
@@ -183,7 +235,13 @@ _PING_RESPONSE_MAP = {
     "ok": None,
 }
 
-REACTION_DELAY_STEPS = 3  # 약 0.5~1초 상당(스텝 길이에 따라 조정) 지연 후 반응
+REACTION_DELAY_STEPS = 5  # 약 0.5~1초 상당(스텝 길이에 따라 조정) 지연 후 반응
+# 핑 유효 반응 창("핑을 보낸 뒤 몇 스텝 안에 반응해야 반응으로 인정하는가")은
+# REACTION_DELAY_STEPS*4 스텝으로 아래에서 계산된다. 이 값은 서버 틱 속도에
+# 비례한 "스텝" 단위라, 2026-10-04에 틱 속도를 6fps->10fps로 올리면서
+# (app.py의 GAME_TICK_FPS) 그대로 뒀다면 유효 창이 약 2초→1.2초로 저절로
+# 짧아져 버렸을 것이다(12스텝 ÷ 6fps=2초 vs 12스텝 ÷ 10fps=1.2초). 설계
+# 의도(약 2초)를 유지하려고 3→5로 같이 올렸다(20스텝 ÷ 10fps=2초).
 
 
 class PingReactiveBot(RoleRestrictedBot):

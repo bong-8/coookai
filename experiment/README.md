@@ -321,18 +321,104 @@ PORT=5001 HOST=127.0.0.1 FLASK_ENV=production python app.py
    (이번 변경은 게임 로직 — `role_restricted_bot.py`/`ping_game.py` — 을
    건드리지 않아 기존 핑/레이아웃 전환 유닛테스트에는 영향이 없다.)
 
+## 2차 플레이테스트 피드백 반영 (완료, 2026-10-04)
+
+실제 플레이 중 발견된 세 가지 문제. 유닛테스트(Test 13 추가, 총 14개 전부
+통과) + 멀티틱 시뮬레이션으로 직접 재현·검증했다.
+
+1. **"봇이 접시를 들고 계속 움직이기만 하고 그대로 고장난다"**(사용자가
+   "접시 제출은 플레이어만 하게 한 설정 때문 아니냐"고 정확히 진단한 버그).
+   원인을 코드로 추적: `RoleRestrictedBot`/`PingReactiveBot`이 쓰는
+   `NO_COUNTERS_PARAMS`는 `"counter_drop": []`라서(`planners.py` 정의),
+   `MediumLevelActionManager.place_obj_on_counter_actions()`가 **항상** 빈
+   리스트를 반환한다 — 즉 "카운터에 물건을 내려놓는다"는 행동 자체가
+   플래너 레벨에서 완전히 막혀 있었다. `excluded_roles=["deliver"]`인 채로
+   완성된 수프(dish+soup)를 들면: ml_action()에서 "deliver"가 제외돼
+   motion_goals가 비고 → 예전 fallback `go_to_closest_feature_actions()`는
+   냄비/디스펜서 위치만 알고 서빙 윈도·카운터는 전혀 모름(코드 확인) → 할
+   수 있는 일이 없는 목표(가장 가까운 냄비 등)로 이동 → 도착해도 상태가 안
+   바뀌니 같은 목표가 계속 나옴 → `GreedyHumanModel.action()`의
+   `auto_unstuck`(제자리에 멈춘 걸 감지하면 무작위 행동을 주입하는 안전장치)
+   이 계속 발동해 "접시를 든 채 꿈틀거리기만 하는" 것처럼 보였다.
+
+   고침: (1) `role_restricted_bot.py`에 `build_mlam_params(mdp)`를 추가해
+   `counter_drop`/`counter_goals`를 그 레이아웃의 전체 카운터 위치로 채운
+   파라미터를 쓰도록 바꿨다(`update_for_layout()`과 `pickle_agent.py` 양쪽
+   다). (2) `ml_action()`의 fallback을 "뭔가 들고 있는데 역할 제한 때문에
+   더 할 수 있는 일이 없으면 `place_obj_on_counter_actions()`로 빈 카운터에
+   내려놓기, 아무것도 안 들고 있을 때만 기존 `go_to_closest_feature_actions`"
+   로 나눴다. 사람이 그 수프를 집어서 마저 배달하면 된다 — "일부 역할은
+   의도적으로 사람의 몫으로 남긴다"는 3.4절 설계와 정확히 들어맞는 동작.
+   40틱 시뮬레이션으로 "더 이상 안 멈추고 실제로 카운터에 내려놓는지"까지
+   확인했다(Test 13).
+
+   **주의(로컬에서 꼭 해야 하는 일)**: `MediumLevelActionManager`는 레이아웃별로
+   계산 결과를 `src/overcooked_ai_py/data/planners/<layout>_am.pkl` 등으로
+   디스크 캐시한다(이 폴더는 `.gitignore`되어 있어 델타 zip에 안 담김,
+   각자 로컬에만 있음). 파라미터가 바뀌었으니 다음에 각 레이아웃을 처음
+   플레이할 때 이 캐시가 자동으로 재계산되는데, 작은 레이아웃은 수 초지만
+   **counter_circuit은 수 분(클라우드 환경에서 3분 이상) 걸릴 수 있다.**
+   레이아웃 전환 시점에 이 재계산이 동기적으로 일어나므로(2026-10-03에
+   고친 레이스 컨디션 수정과 같은 지점 — `update_for_layout()`이
+   `super().activate()`보다 먼저 호출됨), 실제 참가자 세션 도중 이게
+   처음 발동하면 "서버가 멈췄나?" 싶을 만큼 오래 멈춘 것처럼 보일 수 있다.
+   **그래서 실제 파일럿/IRB 세션 전에, "AI 봇과 연습" 조건으로 5단계를
+   한 번 전부(또는 적어도 counter_circuit 한 번) 미리 플레이해서 캐시를
+   미리 데워두는 걸 강력히 권장한다.** `agent.pickle` 자체는 재생성할
+   필요 없음 — 어차피 매 라운드 시작마다 `update_for_layout()`이 그 안의
+   mlam을 새로 계산해서 덮어쓰므로, 저장된 pickle의 mlam은 사실상 쓰이지
+   않는다(의미 있는 건 코드의 `build_mlam_params()`뿐). 다만 코드 일관성을
+   위해 다음 5개 명령으로 `agent.pickle`도 다시 만들어두는 걸 권장
+   (counter_circuit만 수 분 걸릴 수 있음, 나머지는 금방 끝남):
+   ```
+   python -m experiment.server_ext.pickle_agent --layout cramped_room --excluded-roles deliver --name RuleBasedBot_CrampedRoom --player-idx 1 --reactive
+   python -m experiment.server_ext.pickle_agent --layout asymmetric_advantages --excluded-roles deliver --name RuleBasedBot_AsymmetricAdvantages --player-idx 1 --reactive
+   python -m experiment.server_ext.pickle_agent --layout coordination_ring --excluded-roles deliver --name RuleBasedBot_CoordinationRing --player-idx 1 --reactive
+   python -m experiment.server_ext.pickle_agent --layout forced_coordination --excluded-roles deliver --name RuleBasedBot_ForcedCoordination --player-idx 1 --reactive
+   python -m experiment.server_ext.pickle_agent --layout counter_circuit --excluded-roles deliver --name RuleBasedBot_CounterCircuit --player-idx 1 --reactive
+   ```
+
+2. **"오더는 기존 아이콘 형태가 낫다"**: 2026-10-03에 한국어 텍스트
+   ("양파 수프 x2")로 바꿨던 `_drawBonusOrders`/`_drawAllOrders`를 원본
+   공식 데모의 아이콘 스프라이트 렌더링으로 되돌렸다
+   (`_orderIngredientsLabel`/`_ordersToText` 헬퍼는 나중을 위해 남겨둠).
+
+3. **"유저 조작이 아직도 매끄럽지 않다"**: 지난 수정(키 반복 폴링)은 입력
+   빈도 문제였지만, 진짜 병목은 따로 있었다 — `app.py`의 게임 시뮬레이션
+   루프(`play_game`)가 **초당 6번(약 167ms 간격)**으로 하드코딩되어 있었고,
+   `config.json`의 `MAX_FPS`는 로드만 되고 어디에도 안 쓰이는 죽은 값이었다
+   (실제로는 30이 적혀 있었지만 전혀 무관). 방향키를 아무리 자주 보내도
+   서버가 초당 6번만 상태를 반영하니 한계가 있었고, 클라이언트 글라이드
+   애니메이션(`ANIMATION_DURATION=50ms`)도 167ms 중 50ms만 움직이고
+   나머지는 멈춰 보이는 구조였다. `MAX_FPS`를 실제로 `play_game()`에
+   연결하고 10(약 100ms 간격)으로 올렸다 — 6→30처럼 과격하게 올리면 서버
+   부하도 커지고 핑 반응 유효시간(스텝 단위라 틱 속도에 비례해 실제 시간이
+   줄어듦)도 너무 짧아지므로 보수적으로 택함. `game.py`의 게임 제한시간은
+   틱 수가 아니라 실제 시계(`time()`)로 재므로 gameTime=150초는 그대로
+   유지됨(게임이 더 빨리 끝나는 부작용 없음). 같이 조정한 값:
+   - `role_restricted_bot.py`의 `REACTION_DELAY_STEPS`: 3→5 (핑 유효 반응
+     창을 약 2초로 유지 — 안 올리면 6fps 기준 설계값이 틱 속도만 빨라져서
+     1.2초로 저절로 짧아짐).
+   - `predefined.js`의 `MOVEMENT_SEND_INTERVAL_MS`: 120→80 (새 10fps 틱
+     주기 100ms보다 살짝 빠르게).
+   - `graphics.js`의 `ANIMATION_DURATION`: 50→85 (한 틱의 대부분을
+     글라이드가 채우도록, 네트워크 지연을 흡수할 약간의 여유는 남김).
+
+   변경 파일: `app.py`(`GAME_TICK_FPS`, 두 `play_game` 호출 지점),
+   `config.json`(`MAX_FPS: 30→10`), `role_restricted_bot.py`,
+   `static/js/predefined.js`, `graphics/overcooked_graphics_v2.2.js`.
+
 ## 다음 작업 (우선순위 순)
 
-1. 실제 브라우저로 위 수정사항(학습 조건 선택, 실험 봇만 노출, 안내 문구)
-   다시 플레이해서 확인. 특히 "인간 학습 집단" 조건은 컴퓨터 두 대로
-   실제 테스트해볼 것.
-2. 키 입력 반응이 여전히 느리다면, 서버 재시작(코드 반영)과 브라우저
-   강력 새로고침(Ctrl+F5, 캐시된 구 predefined.js 배제) 둘 다 했는지 확인.
-3. "도와줘" 핑이 여전히 티가 안 나는 경우가 있는지, 있다면 어떤 상황인지
+1. 실제 브라우저로 위 세 가지 수정(봇이 카운터에 내려놓는지, 오더 아이콘,
+   조작 매끄러움) 다시 플레이해서 확인. **특히 처음 counter_circuit으로
+   전환될 때 캐시 재계산으로 오래 멈출 수 있다는 점을 염두에 두고, 위
+   "주의" 항목대로 미리 한 번 전체 플레이해서 캐시를 데워둘 것.**
+2. "도와줘" 핑이 여전히 티가 안 나는 경우가 있는지, 있다면 어떤 상황인지
    관찰 → 지도교수 상담해서 "도움"의 정의를 더 구체적으로 확정.
-4. "Deterministic?" 같은 원본 공식 데모의 다른 옵션들, "Replay Trajectories"
+3. "Deterministic?" 같은 원본 공식 데모의 다른 옵션들, "Replay Trajectories"
    기능 도입 여부 검토 (우선순위 낮음, 지금 당장 필수는 아님).
-5. Phase 5 (실험 플로우) 착수.
+4. Phase 5 (실험 플로우) 착수.
 
 ## 알려진 이슈
 
@@ -340,3 +426,7 @@ PORT=5001 HOST=127.0.0.1 FLASK_ENV=production python app.py
   가상환경을 써야 합니다 (3.11에서는 `pip install -e .`가 즉시 실패함).
 - `RoleRestrictedBot.ml_action()`은 `GreedyHumanModel.ml_action()`의 로직을 참고해
   카테고리별로 재작성한 것이라, 원본이 업데이트되면 이 파일도 함께 점검해야 합니다.
+- `src/overcooked_ai_py/data/planners/`의 `*_am.pkl`/`*_mp.pkl` 캐시는
+  `.gitignore`되어 있어 팀원 간에 공유되지 않습니다. mlam 파라미터를 바꿀
+  때마다(2026-10-04의 `counter_drop` 변경처럼) 각자 로컬에서 자동
+  재계산되며, 레이아웃이 클수록(counter_circuit) 오래 걸릴 수 있습니다.

@@ -52,17 +52,18 @@ DEFAULT_AGENT_DIR = (
 
 def build_and_save(layout, excluded_roles, name, reactive, agent_dir, player_idx):
     from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
-    from overcooked_ai_py.planning.planners import (
-        MediumLevelActionManager,
-        NO_COUNTERS_PARAMS,
-    )
+    from overcooked_ai_py.planning.planners import MediumLevelActionManager
     from experiment.agents.role_restricted_bot import (
         RoleRestrictedBot,
         PingReactiveBot,
+        build_mlam_params,
     )
 
     mdp = OvercookedGridworld.from_layout_name(layout)
-    mlam = MediumLevelActionManager(mdp, NO_COUNTERS_PARAMS)
+    # NO_COUNTERS_PARAMS를 그대로 쓰지 않는 이유는 role_restricted_bot.py의
+    # build_mlam_params() 설명 참고 — counter_drop을 비워두면 봇이 "deliver"가
+    # 제외된 채 완성된 수프를 들고 내려놓을 곳이 없어 멈춰버리는 버그가 있었다.
+    mlam = MediumLevelActionManager(mdp, build_mlam_params(mdp))
 
     if reactive:
         agent = PingReactiveBot(
