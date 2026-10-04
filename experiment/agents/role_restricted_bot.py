@@ -111,8 +111,29 @@ class RoleRestrictedBot(GreedyHumanModel):
         action()에서 바로 move_action을 반환하는 경로가 있다 — 교착상태
         회피 반응은 이 속도 제한과 무관하게 항상 즉시 나가야 하므로 의도된
         동작이다(느려진 회피는 오히려 충돌/교착 위험을 키움).
+
+        self._bot_tick_counter를 getattr(..., 0)으로 방어적으로 읽는 이유
+        (실제 배포 환경에서 발견한 버그, 2026-10-05): pickle_agent.py로
+        만들어 둔 기존 agent.pickle 파일들은 이 변경 *이전*의
+        RoleRestrictedBot.__init__으로 만들어진 것이라, pickle.load()로
+        복원된 인스턴스의 __dict__에는 _bot_tick_counter가 아예 없다
+        (pickle은 __init__을 다시 실행하지 않고 저장 당시의 __dict__만
+        그대로 복원하므로). 그 상태에서 `self._bot_tick_counter += 1`을
+        그대로 쓰면 AttributeError가 나는데, 이게 하필
+        npc_policy_consumer(게임 메인 루프가 아니라 NPC 전용 백그라운드
+        스레드) 안에서 조용히 터진다 — 바로 위 reset()의 agent_index
+        주석에 이미 적어둔 것과 똑같은 종류의 함정이다. 스레드가 죽으면
+        그 뒤로 이 NPC의 pending_actions 큐에는 아무것도 안 들어오고,
+        apply_actions()의 `self.pending_actions[i].get(block=True)`가
+        영원히 풀리지 않아 **게임 전체(사람 포함)가 멈춘다** — 실제로 "게임
+        시작하자마자 Time Left가 59.99...에서 멈춘다"는 형태로 재현됨
+        (타이머도 매 틱 갱신되므로 같이 멈춤). agent.pickle을
+        pickle_agent.py로 다시 만들면(최신 __init__이 다시 실행되므로)
+        근본적으로 해결되지만, 기존에 이미 만들어 둔 pickle들까지 전부 다시
+        구워야 하는 번거로움을 피하려고 여기서 getattr로 방어했다 — 새로
+        만드는 pickle이든 기존 pickle이든 둘 다 안전하게 동작한다.
         """
-        self._bot_tick_counter += 1
+        self._bot_tick_counter = getattr(self, "_bot_tick_counter", 0) + 1
         if (
             BOT_SPEED_DIVISOR > 1
             and self._bot_tick_counter % BOT_SPEED_DIVISOR != 0

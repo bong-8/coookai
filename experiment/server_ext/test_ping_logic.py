@@ -650,6 +650,35 @@ def test_bot_speed_throttle_halves_action_frequency():
     print("  PASS (봇 속도가 1/N로, 블로킹이나 prev_state 오작동 없이 줄어듦)\n")
 
 
+def test_speed_throttle_survives_pickle_without_tick_counter():
+    print("=== Test 19: 이번 속도 제한 변경 '이전'에 만들어둔 기존 agent.pickle "
+          "(__dict__에 _bot_tick_counter가 아예 없는 상태)을 복원해도 "
+          "AttributeError 없이 동작하는지 — 실제로 '게임 시작하자마자 "
+          "Time Left 59.99초에서 멈춘다'는 형태로 재현된, npc_policy_consumer "
+          "스레드가 조용히 죽어 게임 전체가 멈추는 버그의 회귀 방지 "
+          "(2026-10-05 발견). reset()의 agent_index 주석과 같은 종류의 "
+          "pickle 호환성 함정 ===")
+    bot = make_bot()
+    # pickle.load()로 '이번 변경 이전'에 저장된 agent.pickle을 복원한 상황을
+    # 정확히 흉내낸다: __init__이 다시 안 돌아가므로 _bot_tick_counter가
+    # 아예 없는 __dict__ 상태.
+    assert "_bot_tick_counter" in bot.__dict__
+    del bot.__dict__["_bot_tick_counter"]
+    assert "_bot_tick_counter" not in bot.__dict__
+
+    bot.set_agent_index(0)
+    mdp = OvercookedGridworld.from_layout_name("cramped_room")
+    state = mdp.get_standard_start_state()
+
+    # 예전엔 바로 이 호출에서 AttributeError가 났다 (npc_policy_consumer
+    # 스레드 안이라 브라우저에서는 그냥 멈춘 것처럼만 보였음).
+    action, info = bot.action(state)
+    assert action is not None and "action_probs" in info
+    assert bot.__dict__["_bot_tick_counter"] == 1
+    print("  PASS (_bot_tick_counter가 없는 옛날 pickle도 AttributeError 없이 "
+          "동작, getattr로 0부터 다시 셈)\n")
+
+
 def test_end_to_end_logging_and_metrics():
     print("=== Test 7 (End-to-End): 핑 채널 -> trajectory 로깅 -> compute_metrics.py 연결 테스트 ===")
     bot = make_bot()
@@ -704,5 +733,6 @@ if __name__ == "__main__":
     test_move_ping_waits_then_forces_retreat_in_dead_end()
     test_enqueue_action_overwrites_stale_instead_of_blocking()
     test_bot_speed_throttle_halves_action_frequency()
+    test_speed_throttle_survives_pickle_without_tick_counter()
     test_end_to_end_logging_and_metrics()
     print("Phase 2 전체(핑 채널 + 봇 반응 + 로깅 + 지표 계산) 테스트 통과.")

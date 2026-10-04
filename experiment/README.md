@@ -684,6 +684,59 @@ Test 13(수프를 카운터에 내려놓는 fallback)은 봇이 느려진 만큼
 BOT_SPEED_DIVISOR를 더 낮추고 싶으면(예: 1/3 속도) `role_restricted_bot.py`
 상단의 상수 값만 바꾸면 된다.
 
+### 위 수정 적용 후 실제로 발생한 치명적 버그: 게임 시작하자마자 멈춤 (완료, 2026-10-05)
+
+위 속도 제한을 적용하고 실제로 플레이하자 "게임 시작하면 Time Left:
+59.99...초에서 게임이 멈춰"라는 피드백 — 타이머까지 같이 멈추는, 틱 자체가
+완전히 정지하는 증상.
+
+**원인**: `experiment/server_ext/pickle_agent.py`로 미리 구워둔
+`static/assets/agents/RuleBasedBot_*/agent.pickle` 파일들은 이번 속도 제한
+변경 **이전의** `RoleRestrictedBot.__init__`으로 만들어진 것이다.
+`pickle.load()`는 `__init__`을 다시 실행하지 않고 저장 당시의 `__dict__`만
+그대로 복원하므로, 복원된 인스턴스에는 새로 추가한 `_bot_tick_counter`
+속성이 아예 없었다. 그 상태에서 `RoleRestrictedBot.action()`의
+`self._bot_tick_counter += 1`이 `AttributeError`를 던지는데, 이게 하필
+`npc_policy_consumer`(게임 메인 루프가 아니라 NPC 전용 백그라운드 스레드)
+안에서 조용히 터진다 — `reset()`의 `agent_index` 주석에 이미 적어둔 것과
+**똑같은 종류의 함정**(pickle은 `__init__`을 안 돌리니, 새로 추가한 속성은
+기존 pickle에 없다)이 또 발생한 것. 스레드가 죽으면 그 NPC의
+`pending_actions` 큐에는 그 뒤로 아무것도 안 들어오고, `apply_actions()`의
+`self.pending_actions[i].get(block=True)`가 영원히 안 풀려 **게임 전체(사람
+포함, 타이머 포함)가 멈춘다** — 정확히 이 증상.
+
+**고침 (두 가지, 둘 다 적용)**:
+1. `RoleRestrictedBot.action()`에서 `self._bot_tick_counter += 1`을
+   `self._bot_tick_counter = getattr(self, "_bot_tick_counter", 0) + 1`로
+   방어적으로 바꿨다 — 앞으로 클래스에 새 인스턴스 속성을 추가해도, 기존에
+   구워둔 pickle이 그 속성 없이도 안전하게 동작한다(이번처럼 또 pickle을
+   전부 다시 구워야 하는 상황을 예방).
+2. 그래도 **기존 5개 pickle 자체가 이미 낡은 상태**(이번 속도 제한보다도
+   전, 심지어 일부는 "비켜줘" 기능보다도 전에 만들어졌을 수 있음)라, 근본
+   해결을 위해 `pickle_agent.py`로 5개 레이아웃
+   (cramped_room/asymmetric_advantages/coordination_ring/
+   forced_coordination/counter_circuit) 전부 다시 구워서 교체했다. (실제
+   게임에서는 1라운드가 시작될 때 로드되는 피클 하나만 쓰고 이후 레이아웃
+   전환은 `update_for_layout` 훅으로 처리되지만, "시작 난이도(연구자 설정)"
+   에서 특정 레이아웃 하나만 테스트로 고를 수도 있어서 5개 전부 최신화함.)
+
+**검증**: `test_ping_logic.py`에 Test 19 추가 — `_bot_tick_counter`가 없는
+`__dict__` 상태(=옛 pickle을 복원한 상황을 그대로 흉내)에서
+`bot.action()`을 호출해도 `AttributeError` 없이 정상 동작하는지 확인.
+전체 19개 테스트 통과. 또한 5개 pickle을 전부 직접 다시 로드해서 각자의
+레이아웃으로 `action()` 몇 틱 돌려서 멈추지 않는지 직접 확인함.
+
+**주의**: `agent.pickle`은 바이너리 파일이라 git diff로는 내용이 안 보임 —
+덮어쓴 뒤 git에 올릴 때 "바이너리 파일이 변경됨"처럼 보이는 게 정상이다.
+**앞으로 `role_restricted_bot.py`의 `PingReactiveBot`/`RoleRestrictedBot`에
+새 인스턴스 속성을 추가할 때마다, 이번처럼 `getattr(..., 기본값)`으로
+방어하는 걸 기본 습관으로 삼을 것** — 아니면 매번 5개 pickle을 다시 구워야
+하고, 깜빡하면 또 "게임이 조용히 멈추는" 디버깅하기 어려운 버그로 돌아온다.
+
+변경 파일: `role_restricted_bot.py`(`action()`의 `getattr` 방어),
+`test_ping_logic.py`(Test 19 추가), `static/assets/agents/RuleBasedBot_*/agent.pickle`
+(5개 전부 재생성 — 바이너리).
+
 ## 다음 작업 (우선순위 순)
 
 1. **봇 속도 1/2 + 게임 시간 60초를 실제 브라우저로 플레이해서 확인.**
