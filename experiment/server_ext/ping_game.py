@@ -44,6 +44,7 @@ TODO(파일럿 전 확정 필요):
 (_decide_move_aside_action 등) 참고. 교체일 뿐 종류 수는 그대로 4개.
 """
 import time
+from queue import Empty
 
 PING_PREFIX = "PING_"
 VALID_PING_TYPES = {"help", "move", "mine", "ok"}
@@ -70,7 +71,42 @@ class PingMixin:
         if isinstance(action, str) and action.startswith(PING_PREFIX):
             self._enqueue_ping(player_id, action)
             return
+        # "봇/유저 속도 차이가 이전보다 더 벌어졌다"는 피드백(2026-10-04)으로
+        # 발견한 버그 — 바로 전 수정(app.py의 buff_size=1)의 부작용이었다.
+        #
+        # buff_size=1만으로는 안 됐던 이유: game.py의 기본 enqueue_action은
+        # queue.Queue.put(action)을 "블로킹"(기본값 block=True)으로 호출한다.
+        # 클라이언트가 서버 틱(100ms)보다 빠르게(80ms) 보내므로, 큐가 이미
+        # 차 있을 때 이 put()이 다음 틱이 비울 때까지 몇십 ms씩 그 요청을
+        # 처리하던 소켓 이벤트 스레드(그린릿)를 그대로 블로킹한다. eventlet
+        # 환경에서 한 커넥션의 이벤트는 보통 들어온 순서대로 처리되므로, 이
+        # 핸들러가 블로킹된 동안 그 다음 입력들은 (파이썬 큐가 아니라)
+        # 소켓/전송 계층 버퍼에 쌓인다 — 겉으로는 큐 길이를 1로 제한했지만
+        # 실제로는 적체가 "한 칸 위(전송 계층)"로 옮겨간 것뿐이었고, 매 입력마다
+        # 블로킹 자체가 추가 지연을 더해서 체감 속도 차이가 오히려 더
+        # 나빠졌다.
+        #
+        # 고침: 블로킹 put() 대신, 큐가 이미 차 있으면 거기 든 "오래된"(아직
+        # 처리 안 된) 액션을 먼저 버리고 새 액션을 넣는다 — "최신 입력이
+        # 과거 입력보다 항상 더 중요하다"는 뜻이기도 하고(사람은 지금 누르고
+        # 있는 방향키가 중요하지, 80ms 전에 누르고 있던 방향키가 아님), 이
+        # put()은 그 즉시 성공하므로 블로킹이 전혀 없다. 큐 길이는 여전히
+        # 항상 0~1로 유지된다(app.py의 buff_size=1과 같이 써야 동작 —
+        # maxsize가 무제한(-1)이면 Queue.full()이 항상 False라 이 로직이
+        # 무의미해진다).
+        self._drop_stale_action_if_queue_full(player_id)
         super(PingMixin, self).enqueue_action(player_id, action)
+
+    def _drop_stale_action_if_queue_full(self, player_id):
+        if player_id not in self.players:
+            return
+        idx = self.players.index(player_id)
+        q = self.pending_actions[idx]
+        if q.full():
+            try:
+                q.get_nowait()
+            except Empty:
+                pass
 
     def _enqueue_ping(self, player_id, action):
         if not self.is_active or player_id not in self.players:

@@ -29,6 +29,7 @@ Phase 2 검증: 핑 채널 로직(PingMixin) + Phase 3(PingReactiveBot) + Phase 
 """
 import json
 import pickle
+import queue
 import sys
 import tempfile
 from collections import deque
@@ -62,7 +63,15 @@ class FakeOvercookedGame:
         self.players = list(players)
         self.human_players = {p for p in players if not p.startswith("bot_")}
         self.npc_policies = npc_policies or {}
-        self.pending_actions = {p: [] for p in players}
+        # 실제 game.py의 Game.add_player()와 동일하게: self.players 리스트에서의
+        # "정수 인덱스"로 접근하는 queue.Queue 객체들(원본은 player_id 문자열이
+        # 아니라 인덱스로 pending_actions를 관리함). maxsize=1은 2026-10-04에
+        # app.py에서 human buff_size=1로 바꾼 것과 동일 — PingMixin.enqueue_action
+        # 의 "큐가 차 있으면 오래된 걸 버리고 최신으로 교체" 로직(ping_game.py의
+        # _drop_stale_action_if_queue_full)이 이 Queue.full()/get_nowait()에
+        # 의존하므로, 예전의 "player_id로 바로 접근하는 plain list" 가짜 구조로는
+        # 더 이상 검증할 수 없다.
+        self.pending_actions = [queue.Queue(maxsize=1) for _ in players]
         self._is_active = True
         self.trajectory = []
         self.curr_tick = 0
@@ -78,13 +87,16 @@ class FakeOvercookedGame:
         # 원본과 동일하게: 알 수 없는 액션 문자열은 KeyError (action_to_overcooked_action[action] 흉내)
         if action not in self._VALID_MOVES:
             raise KeyError(action)
-        self.pending_actions[player_id].append(action)
+        idx = self.players.index(player_id)
+        self.pending_actions[idx].put(action)
 
     def apply_actions(self):
         joint_action = {}
-        for p in self.players:
-            queue = self.pending_actions[p]
-            joint_action[p] = queue.pop(0) if queue else "STAY"
+        for i, p in enumerate(self.players):
+            try:
+                joint_action[p] = self.pending_actions[i].get_nowait()
+            except queue.Empty:
+                joint_action[p] = "STAY"
 
         # 위치를 흉내만 내서 compute_metrics의 idle_ratio 계산이 동작하게 함
         state = {
@@ -150,7 +162,7 @@ def test_normal_move_unaffected():
     print("=== Test 2: 일반 이동 액션(STAY 등)은 기존과 동일하게 pending_actions로 감 ===")
     game = TestGame(players=["p1", "p2"])
     game.enqueue_action("p1", "UP")
-    assert game.pending_actions["p1"] == ["UP"]
+    assert list(game.pending_actions[0].queue) == ["UP"]
     assert game._pending_pings == []
     print("  PASS\n")
 
@@ -161,7 +173,7 @@ def test_ping_action_routed_not_keyerror():
     for ping_type in VALID_PING_TYPES:
         game.enqueue_action("p1", "PING_" + ping_type.upper())
     assert len(game._pending_pings) == len(VALID_PING_TYPES)
-    assert game.pending_actions["p1"] == []  # 이동 큐에는 안 들어감
+    assert game.pending_actions[0].qsize() == 0  # 이동 큐에는 안 들어감
     for entry in game._pending_pings:
         assert entry["player_id"] == "p1"
         assert entry["ping_type"] in VALID_PING_TYPES
@@ -544,6 +556,26 @@ def test_move_ping_waits_then_forces_retreat_in_dead_end():
           f"반드시 후퇴: {forced})\n")
 
 
+def test_enqueue_action_overwrites_stale_instead_of_blocking():
+    print("=== Test 17: 큐가 이미 차 있어도 블로킹/적체 없이 '최신' 액션으로 "
+          "덮어쓰는지 ('봇/유저 속도 차이가 이전보다 더 벌어졌다'는 피드백으로 "
+          "발견된, buff_size=1 수정 자체의 부작용 회귀 방지) ===")
+    game = TestGame(players=["p1", "p2"])
+    # 틱이 한 번도 안 돌아 큐를 아직 아무도 안 비운 상태에서, 클라이언트가
+    # 서버보다 빠르게(80ms vs 100ms) 두 번 연속 보낸 것과 같은 상황을 흉내냄.
+    # 이전(blocking put()) 방식이었다면 두 번째 호출이 여기서 블로킹되거나
+    # (이 테스트처럼 단일 스레드면) 영원히 멈췄을 상황.
+    game.enqueue_action("p1", "UP")
+    game.enqueue_action("p1", "RIGHT")
+    assert game.pending_actions[0].qsize() == 1, (
+        f"큐 길이가 1이 아님(적체 발생): {game.pending_actions[0].qsize()}"
+    )
+    assert list(game.pending_actions[0].queue) == ["RIGHT"], (
+        "오래된 액션(UP)이 아니라 최신 액션(RIGHT)만 남아있어야 함"
+    )
+    print("  PASS (오래된 액션은 버려지고 최신 액션만 남음, 큐 길이 항상 최대 1)\n")
+
+
 def test_end_to_end_logging_and_metrics():
     print("=== Test 7 (End-to-End): 핑 채널 -> trajectory 로깅 -> compute_metrics.py 연결 테스트 ===")
     bot = make_bot()
@@ -596,5 +628,6 @@ if __name__ == "__main__":
     test_move_aside_bfs_helpers()
     test_move_ping_reroutes_around_blocker_in_open_area()
     test_move_ping_waits_then_forces_retreat_in_dead_end()
+    test_enqueue_action_overwrites_stale_instead_of_blocking()
     test_end_to_end_logging_and_metrics()
     print("Phase 2 전체(핑 채널 + 봇 반응 + 로깅 + 지표 계산) 테스트 통과.")
