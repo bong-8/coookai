@@ -171,10 +171,35 @@ socket.on('end_lobby', function() {
 // 아무리 자주 보내도 서버가 그만큼만 반영하니 한계가 있었다. 서버 틱
 // 속도를 app.py에서 10fps(약 100ms 간격, config.json의 MAX_FPS)로
 // 올렸으므로, 그 변화에 맞춰 이 간격도 같이 줄였다.
+//
+// 추가로 발견된 버그(2026-10-04, "유저와 봇의 속도를 일치시켜줘" 피드백):
+// 이 간격(80ms)이 서버 틱(100ms)보다 빠르다는 것 자체는 의도한 설계였지만,
+// 당시 app.py에서 human 플레이어의 pending_actions 큐가 무제한
+// (buff_size=-1 기본값)이어서, 서버가 틱당 1개만 소비하는 동안 못 처리한
+// 입력이 시간이 지날수록 한도 없이 쌓여 "사람 입력이 점점 더 늦게 반영되는"
+// 누적 지연을 만들었다 — 매 라운드가 길어질수록 사람 쪽만 체감 속도가
+// 떨어지고, 매 틱 즉석 결정이라 큐 자체가 없는 봇은 전혀 안 느려지니 둘의
+// 속도 차이가 점점 벌어지는 것처럼 보였다. 이 JS 파일이 아니라 app.py의
+// game.add_player(user_id, buff_size=1)로 고쳤다(큐 길이를 항상 최대
+// 1로 제한 — NPC 봇이 원래부터 쓰던 것과 동일한 설정). 그 고침 덕분에 이
+// 80ms 간격은 그대로 둬도 안전하다 — 큐가 꽉 차 있으면 enqueue_action()의
+// Queue.put()이 서버가 다음 틱에 비울 때까지 잠깐만 대기할 뿐, 무한히
+// 쌓이지는 않는다.
 var MOVE_KEY_TO_ACTION = { 37: 'LEFT', 38: 'UP', 39: 'RIGHT', 40: 'DOWN' };
 var PRESSED_MOVE_KEYS = [];  // 누른 순서 유지 (가장 최근 누른 키 우선)
 var movementIntervalId = -1;
 var MOVEMENT_SEND_INTERVAL_MS = 80;  // 서버 10fps(~100ms)보다 살짝 빠르게
+
+// 핑을 마우스로 클릭하기 어렵다는 피드백(2026-10-04)으로 추가한 숫자키
+// 단축키 — 게임 중에는 양손이 방향키/스페이스에 가 있으니, 숫자키 1~4를
+// 키보드 맨 위 줄에 그대로 둬 손을 크게 옮기지 않고도 누를 수 있게 했다.
+// PING_TYPES 배열(아래)과 같은 순서: 1=help(도와줘), 2=move(비켜줘),
+// 3=mine(내가 할게), 4=ok. e.which: 1='1'=49, 2='2'=50, 3='3'=51, 4='4'=52.
+// move(비켜줘)는 2026-10-04에 "look"(이거 봐) 자리를 교체했다 — look은
+// 행동 변화가 전혀 없어서 "핑을 눌러도 아무 효과가 없다"는 피드백의
+// 원인이었다. 자세한 반응 로직은 experiment/agents/role_restricted_bot.py의
+// PingReactiveBot._decide_move_aside_action 참고.
+var PING_KEY_TO_TYPE = { 49: 'help', 50: 'move', 51: 'mine', 52: 'ok' };
 
 function enable_key_listener() {
     $(document).on('keydown', function(e) {
@@ -187,6 +212,11 @@ function enable_key_listener() {
             e.preventDefault();
             if (!e.repeat) {
                 socket.emit('action', { 'action': 'SPACE' });
+            }
+        } else if (PING_KEY_TO_TYPE.hasOwnProperty(e.which)) {
+            e.preventDefault();
+            if (!e.repeat) { // 키를 누르고 있어도 반복 전송되지 않게
+                send_ping(PING_KEY_TO_TYPE[e.which]);
             }
         }
     });
@@ -222,12 +252,17 @@ function disable_key_listener() {
  * 이벤트로 PING_<TYPE> 문자열을 보낸다. *
  * * * * * * * * * * * * * * * * * * * * */
 
-var PING_TYPES = ['help', 'look', 'mine', 'ok'];
+var PING_TYPES = ['help', 'move', 'mine', 'ok'];
+
+// 버튼 클릭과 숫자키(1/2/3/4) 단축키가 똑같은 경로를 타도록 공용 함수로 뺐다.
+function send_ping(pingType) {
+    socket.emit('action', { 'action': 'PING_' + pingType.toUpperCase() });
+}
 
 $(function() {
     PING_TYPES.forEach(function (pingType) {
         $('#ping-' + pingType).click(function () {
-            socket.emit('action', { 'action': 'PING_' + pingType.toUpperCase() });
+            send_ping(pingType);
         });
     });
 });

@@ -177,10 +177,11 @@ pip install Flask-SocketIO==4.3.0 python-socketio==4.6.0 python-engineio==3.13.0
     Flask==2.1.3 eventlet==0.41.2 "setuptools==79.0.1"
 # (setuptools는 최신 버전을 깔면 pkg_resources가 빠져있어 ray가 깨짐 — 꼭 이 버전으로)
 
-# 3. Docker 빌드 때만 자동으로 복사되는 그래픽 파일을 수동으로 복사
-#    (이거 안 하면 소켓/게임 로직은 다 되는데 Phaser 캔버스가 안 뜸 —
-#    실제 브라우저로 처음 테스트할 때 발견)
-cp graphics/overcooked_graphics_v2.2.js static/js/graphics.js   # src/overcooked_demo/server/ 안에서 실행
+# 3. (2026-10-04부로 더 이상 수동으로 할 필요 없음 — app.py가 기동할 때마다
+#    graphics/overcooked_graphics_v2.2.js를 static/js/graphics.js로 자동으로
+#    동기화한다. 아래 "그래픽 파일 자동 동기화" 섹션 참고. 예전엔 이 단계를
+#    깜빡해서 "오더가 아이콘 수정했는데도 여전히 텍스트로 보인다"는 문제가
+#    반복해서 발생했었다.)
 
 # 4. 서버 실행
 cd src/overcooked_demo/server
@@ -408,6 +409,165 @@ PORT=5001 HOST=127.0.0.1 FLASK_ENV=production python app.py
    `config.json`(`MAX_FPS: 30→10`), `role_restricted_bot.py`,
    `static/js/predefined.js`, `graphics/overcooked_graphics_v2.2.js`.
 
+## 3차 플레이테스트 피드백 반영 (완료, 2026-10-04)
+
+위 2차 수정을 실제로 적용한 뒤에도 다섯 가지 문제가 재현됨. 유닛테스트(Test
+5b 추가, 총 15개 전부 통과) + 독립 큐 시뮬레이션으로 직접 재현·검증했다.
+
+1. **"order가 아직도 텍스트야"**: 2차 수정에서 소스 파일
+   (`graphics/overcooked_graphics_v2.2.js`)은 분명히 아이콘 렌더링으로
+   되돌렸는데, 실제로 서빙되는 `static/js/graphics.js`는 그대로 옛 텍스트
+   버전이었다(diff로 직접 확인). Docker 빌드만 `COPY ./graphics/$GRAPHICS
+   ./static/js/graphics.js` 단계를 자동으로 해주는데, 로컬에서는 그걸 매번
+   수동으로 다시 복사해야 한다는 걸 깜빡하기 쉬운 구조였다(이미 README의
+   "로컬 환경에서 실행하는 법"에 적어뒀었지만, 코드를 고칠 때마다 또
+   깜빡하는 게 반복됨). **구조적으로 고침**: `app.py`가 기동할 때마다
+   `graphics/overcooked_graphics_v2.2.js`와 `static/js/graphics.js`의
+   내용을 비교해서 다르면 자동으로 덮어쓴다(`config.json`의
+   `"GRAPHICS_SOURCE"`로 소스 파일명을 바꿀 수 있음, 기본값은 지금 파일).
+   이제부터는 그래픽 소스를 고치고 서버를 (재)실행만 하면 항상 최신이
+   서빙된다 — 수동 복사 단계가 아예 필요 없어짐.
+
+2. **"유저와 봇의 속도를 일치시켜줘" (AI는 서버 딜레이를 안 받는 것 같다)**:
+   2차 수정 자체(틱 속도 10fps 전환)는 맞는 방향이었지만, 그 수정의
+   부작용으로 **새 버그**가 생겼었다. `predefined.js`가 `MOVEMENT_SEND_INTERVAL_MS
+   =80ms`로 서버 틱(100ms)보다 일부러 빠르게 입력을 보내는데, `app.py`가
+   human 플레이어를 `game.add_player(user_id)`로 등록할 때 `buff_size`를
+   지정하지 않아 기본값 `-1`(무제한 큐)를 그대로 쓰고 있었다. `game.py`의
+   `apply_actions()`는 사람 쪽에서 틱당 딱 1개(`get(block=False)`)만
+   소비하므로, 서버보다 빠르게 쏟아지는 입력이 시간이 지날수록 **한도 없이
+   큐에 쌓였다** — 라운드가 길어질수록 사람 입력이 점점 늦게 반영되는
+   반면, 봇은 매 틱 즉석에서 결정하므로 큐 자체가 없어 전혀 안 느려지니
+   "유저와 봇의 속도가 벌어진다"는 느낌으로 나타났다(사용자의 "서버 딜레이를
+   안 받는 것 같다"는 직관이 현상 설명으로는 정확했다 — 다만 봇이 딜레이를
+   "안 받는" 게 아니라, 사람 쪽에만 이 큐 적체가 생기는 구조였다). 독립
+   큐 시뮬레이션으로 재현: 80ms 전송/100ms 소비를 5초 반복하면 무제한 큐는
+   13개 적체, `buff_size=1`로 고치면 항상 0~1개로 유지됨을 확인했다. 고침:
+   `app.py`의 두 `game.add_player(user_id)` 호출(최초 입장/대기 중인
+   게임에 합류) 모두 `buff_size=1`을 명시 — NPC 봇이 원래부터 쓰던 설정과
+   동일하게 맞췄다. `Queue.put()`이 기본적으로 블로킹이라 큐가 꽉 차 있으면
+   다음 틱이 비울 때까지 짧게 대기할 뿐, 무한히 쌓이는 일은 이제 없다.
+
+3. **"핑에 대해 반응이 전혀 없는 것 같다"**: `_show_ping_on_screen()`이
+   "보낸 사람" 머리 위에만 말풍선을 띄워서, 상대(인간이든 봇이든)가 그
+   핑을 "들었다"는 걸 보여줄 방법이 아예 없었다 — 실제 행동 반응은
+   `REACTION_DELAY_STEPS`만큼 지연 후에만 나타나니 더더욱 "반응 없음"처럼
+   보였다. 고침: `ping_game.py`의 `_route_ping_to_npc_bots()`가 핑을 받는
+   **즉시**(지연 없이) 그 봇 머리 위에도 OK 말풍선을 띄우도록 추가했다
+   (`.values()` → `.items()`로 바꿔 봇의 `player_id`를 확보). 이 합성
+   ack는 `_enqueue_ping()`의 전체 로깅 파이프라인을 타지 않고
+   `_show_ping_on_screen()`만 직접 호출해서, 사람 핑 횟수 같은 연구
+   지표(trajectory의 `pings` 필드)를 오염시키지 않는다(Test 5b로 검증).
+
+4. **"핑을 마우스로 클릭하는 것도 어렵다" → 숫자키 1~4 매핑**:
+   `predefined.js`에 `PING_KEY_TO_TYPE = {1: help, 2: look, 3: mine, 4: ok}`
+   를 추가해 `enable_key_listener()`의 keydown 핸들러에서 처리하도록 했다
+   (OS 자동 반복은 무시, 방향키/스페이스와 동일한 핸들러 안에서 같이
+   처리). 버튼 클릭과 숫자키가 같은 `send_ping()` 함수를 공유한다.
+   `predefined.html`의 핑 버튼 라벨도 "도와줘 (1)"처럼 단축키를 같이
+   보여주도록 바꿨다.
+
+5. **"각 핑에 대한 봇의 반응을 같이 고민해보고 적용"**: `_PING_RESPONSE_MAP`
+   (help→전체 해제, look→변화 없음, mine→deliver 양보, ok→변화 없음)을
+   다시 검토한 결과, 맵 자체는 그대로 유지하기로 했다 — "반응이 없다"는
+   느낌의 진짜 원인은 위 3번(시각적 수신확인 부재)이었고, look/ok까지
+   행동을 바꾸게 하면 오히려 "그냥 알림용 핑인데 봇이 갑자기 하던 일을
+   바꾼다"는 혼란을 만들 위험이 있다고 판단했다(`role_restricted_bot.py`에
+   재검토 근거를 코드 주석으로 남겨뒀다). 즉: **"들었다"는 시각적 확인은
+   모든 핑에 공통으로 주고, "행동이 바뀌는지"는 핑의 의미에 따라 다르게
+   남겨두는** 현재 구조가 Phase 4 핑-행동 일치 지표 설계와도 맞는다고
+   결론 내렸다. 사용자가 지도교수님과 "뭘 해야 도움으로 느껴지는지"를
+   더 확정하고 싶다면(README에 이미 있던 TODO) 그때 다시 조정하면 된다.
+
+   변경 파일: `app.py`(그래픽 자동 동기화, `buff_size=1`),
+   `config.json`(`GRAPHICS_SOURCE` 키 추가), `ping_game.py`
+   (`_route_ping_to_npc_bots`), `role_restricted_bot.py`(주석만, 맵 값은
+   유지), `static/js/predefined.js`(`PING_KEY_TO_TYPE`, `send_ping()`),
+   `static/templates/predefined.html`(버튼 라벨), `test_ping_logic.py`
+   (Test 5b 추가).
+
+## "비켜줘"(move) 핑 추가 — look 교체 (완료, 2026-10-04)
+
+"핑이 직관적이지 않다"는 피드백 — help/mine/ok는 전부 "어떤 역할을 할지"를
+바꾸는 사회적 신호였는데, 그중 어느 것도 "지금 당장 서로 길을 막고 있다"는
+물리적 충돌 상황에는 직접 대응하지 않았다(특히 `look`은 애초에 행동 변화가
+전혀 없었음). 그 자리를 "비켜줘"로 교체했다 — 서로 인접해 길을 막고 있을 때
+쓰면, 봇이 실제로 비켜주는, 게임에 즉각적인 영향을 주는 핑. 종류 수는
+그대로 4개(help/move/mine/ok), 키 매핑(1~4)도 그대로.
+
+**설계 결정(실제 코드 작성 전에 먼저 확정한 것들)**:
+- look 자리를 교체(5번째 핑 추가 대신) — 키 매핑을 안 건드리기 위해.
+- 핑을 보낸 사람과 봇이 인접(거리 1)해 있을 때만 실제 반응 — 그 외엔 OK
+  말풍선만 뜨고 행동은 안 바뀜("무관한데 갑자기 움직인다"는 혼란 방지).
+- 대안 경로가 전혀 없는 외길에서는 "뒤로 한 칸" 같은 임시방편이 아니라,
+  단계적으로 교착상태(둘 다 서로 기다리며 영원히 안 움직이는 상황)를
+  구조적으로 막는 것을 목표로 함.
+
+**기술적으로 왜 쉽지 않은가**: 기존 help/mine 반응은 전부 "어떤 일을 할지"
+(역할, `excluded_roles`)만 바꾸고 길찾기는 항상 그대로 `mlam.motion_planner`
+(레이아웃마다 미리 계산해 디스크에 캐시해둔 고정 그래프, 2차 수정에서 다룬
+그 캐시)를 쓴다. "비켜줘"는 "지금 서 있는 자리를 비켜야 한다"는 문제라,
+그 고정 그래프가 모르는 "지금 이 순간 상대가 서 있는 칸"이라는 동적
+장애물을 반영해야 한다. 캐시된 플래너 자체를 매 틱 다시 계산하는 건
+말이 안 되므로(다른 라운드/참가자에도 영향을 주는 공유 캐시이고, 큰
+레이아웃은 재계산에 몇 분씩 걸림), "비켜주기" 전용으로 그 순간만 쓰는
+가벼운 그리드 BFS를 따로 뒀다(`role_restricted_bot.py`의
+`_bfs_first_step_avoiding`/`_best_retreat_step`) — 레이아웃이 커도 수십 칸
+짜리 평범한 BFS라 매 틱 돌려도 비용이 거의 없다.
+
+**교착상태 방지(3단계, 반드시 순서대로 시도)**:
+1. **즉시 대안 경로 탐색**: 사람이 서 있는 칸 하나만 피해서 원래 목적지까지
+   가는 경로를 그리드 BFS로 찾는다. 찾아지면 대기 없이 바로 그 경로로 이동.
+2. **대안이 없으면 짧게만 대기**: 진짜 외길이면, `MOVE_ASIDE_GRACE_TICKS`
+   (기본값 10틱 ≈ 1초, 10fps 기준. 처음엔 기존 핑 유효창과 맞춰 2초로
+   뒀었는데 "너무 길게 느껴질 수 있다"는 판단으로 1초로 줄임)만큼만
+   그 자리에서 대기 — 사람이 곧 비켜줄 걸 기대하는 짧은 유예. 서버 틱
+   속도(`config.json`의 `MAX_FPS`)를 바꾸면 이 값도 같이 조정해야
+   실제 대기 시간(초)이 유지된다.
+3. **그래도 안 풀리면 봇이 무조건 후퇴**: 유예가 끝나도 막혀 있으면, 그
+   순간부터는 "누가 먼저 움직일지"를 다시 저울질하지 않고 봇이 반드시
+   (선택이 아니라 확정) 사람에게서 가장 멀어지는 칸으로 물러난다. "둘 다
+   끝까지 기다리기만 하는" 대칭적 교착은 이 비대칭(항상 봇이 양보) 덕에
+   수학적으로 생길 수 없다.
+
+추가로 "되돌이표"(흔들림) 방지: 사람이 미세하게 움직일 때마다 매번 경로를
+다시 계산해서 갈아타면 제자리서 떠는 것처럼 보일 수 있어, 이전에 쓰던
+방향이 여전히 유효하면(벽도 아니고 사람이 서 있는 칸도 아니면) 그대로
+유지한다. 동률인 선택지(예: 후퇴 방향이 여러 개로 거리가 같을 때)는 항상
+같은 순서(`_MOVE_DIRECTION_PRIORITY` = 북→동→남→서)로 골라 매번 다른
+선택으로 갈아타지 않게 했다.
+
+**인접 여부는 어떻게 아는가**: `ping_game.py`의 `_enqueue_ping()`이 핑 보낸
+사람의 `players` 리스트 인덱스(`sender_idx`)를 핑 항목에 같이 담아서
+`PingReactiveBot.ping_queue`로 넘긴다. 봇은 매 틱 `state.players[sender_idx]
+.position`으로 "지금" 그 사람이 어디 서 있는지 조회해서 거리를 재므로,
+핑을 보낸 순간의 위치가 아니라 반응 창(≈2초) 동안 계속 최신 위치를
+기준으로 판단한다(사람이 핑을 보낸 뒤 움직여도 따라 반응함).
+
+**구조**: help/mine/ok는 기존처럼 `ml_action()`이 반환하는 motion_goals를
+바꿔서 반응하지만(그 경로는 안 바꿈), "비켜줘"는 그 경로 선택 자체를
+우회해야 하므로 더 위쪽인 `action()`을 오버라이드해서 처리한다(motion
+goals/`mlam.motion_planner`를 아예 거치지 않고 그 틱의 저수준 이동 액션을
+직접 반환). 두 채널(즉시성 핑 vs 비켜주기 모드)이 같은 `ping_queue`를
+같이 쓰면서도 서로 간섭하지 않도록, 큐를 비우는 로직(`_drain_ping_queue`)을
+따로 둬서 "move" 항목은 보이는 즉시 처리하고 나머지는 기존처럼 틱당
+하나씩 순서대로 넘겨준다.
+
+**검증**: `test_ping_logic.py`에 Test 14(BFS/후퇴 순수 로직 단위 테스트),
+Test 15(열린 공간에서 즉시 우회 — 실제 cramped_room 레이아웃), Test
+16(외길에서 유예 후 강제 후퇴 — 교착상태 방지 핵심 로직)을 추가, 전체
+18개 테스트 전부 통과.
+
+변경 파일: `ping_game.py`(`VALID_PING_TYPES`, `_enqueue_ping`의
+`sender_idx`), `role_restricted_bot.py`(`MOVE_PING_TYPE`,
+`_bfs_first_step_avoiding`, `_best_retreat_step`, `PingReactiveBot`의
+`action()`/`_decide_move_aside_action`/`_drain_ping_queue` 등),
+`static/js/predefined.js`(`PING_TYPES`, `PING_KEY_TO_TYPE`),
+`static/templates/predefined.html`(`#ping-move` 버튼),
+`graphics/overcooked_graphics_v2.2.js`(`PING_LABELS`),
+`static/js/graphics.js`(자동 동기화로 반영), `test_ping_logic.py`
+(Test 14/15/16 추가).
+
 ## 다음 작업 (우선순위 순)
 
 1. 실제 브라우저로 위 세 가지 수정(봇이 카운터에 내려놓는지, 오더 아이콘,
@@ -416,9 +576,15 @@ PORT=5001 HOST=127.0.0.1 FLASK_ENV=production python app.py
    "주의" 항목대로 미리 한 번 전체 플레이해서 캐시를 데워둘 것.**
 2. "도와줘" 핑이 여전히 티가 안 나는 경우가 있는지, 있다면 어떤 상황인지
    관찰 → 지도교수 상담해서 "도움"의 정의를 더 구체적으로 확정.
-3. "Deterministic?" 같은 원본 공식 데모의 다른 옵션들, "Replay Trajectories"
+3. **"비켜줘" 핑을 실제 브라우저로 플레이하며 확인.** 특히: (a) 좁은 레이아웃
+   (cramped_corridor, forced_coordination 등)에서 일부러 서로 막아보고
+   유예 시간(≈2초) 후 봇이 실제로 후퇴하는지, (b) 열린 레이아웃에서 즉시
+   우회하는지, (c) 사람이 핑을 보낸 뒤 계속 움직일 때도 봇이 "그 순간"
+   위치를 따라 반응하는지. 유예 시간(`MOVE_ASIDE_GRACE_TICKS`)이 실제
+   플레이에서 너무 길게/짧게 느껴지면 조정.
+4. "Deterministic?" 같은 원본 공식 데모의 다른 옵션들, "Replay Trajectories"
    기능 도입 여부 검토 (우선순위 낮음, 지금 당장 필수는 아님).
-4. Phase 5 (실험 플로우) 착수.
+5. Phase 5 (실험 플로우) 착수.
 
 ## 알려진 이슈
 

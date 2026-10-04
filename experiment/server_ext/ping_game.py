@@ -12,7 +12,7 @@ Phase 2: 핑 소통 채널.
       - 원본 OvercookedGame.enqueue_action(player_id, action) 은
         action_to_overcooked_action[action] 에서 STAY/UP/DOWN/LEFT/RIGHT/SPACE
         가 아니면 KeyError.
-      - 클라이언트가 "PING_HELP" / "PING_LOOK" / "PING_MINE" / "PING_OK" 같은
+      - 클라이언트가 "PING_HELP" / "PING_MOVE" / "PING_MINE" / "PING_OK" 같은
         문자열을 그대로 그 action 이벤트로 보내면, 여기서 "PING_" 접두어를
         감지해 이동 큐가 아니라 별도의 핑 큐로 라우팅한다.
       - apply_actions()가 만드는 transition dict에 "pings" 필드를 추가해
@@ -36,11 +36,17 @@ TODO(파일럿 전 확정 필요):
 - 핑 타입 목록(VALID_PING_TYPES)이 실제 UI 버튼과 정확히 일치하는지
 - _route_ping_to_npc_bots가 "사람이 보낸 핑만" NPC에 전달하는지, AI끼리도
   핑을 주고받게 할지 (현재: 모든 플레이어의 핑을 모든 NPC에 전달)
+
+핑 타입 변경 이력(2026-10-04): "look"(이거 봐)은 행동 변화가 전혀 없어서
+"핑을 보내도 아무 효과가 없다"는 피드백의 원인 중 하나였다. 그 자리를
+"move"(비켜줘)로 교체했다 — 서로 길을 막았을 때 쓰는, 게임에 직접 영향을
+주는 핑. 자세한 반응 로직은 role_restricted_bot.py의 PingReactiveBot
+(_decide_move_aside_action 등) 참고. 교체일 뿐 종류 수는 그대로 4개.
 """
 import time
 
 PING_PREFIX = "PING_"
-VALID_PING_TYPES = {"help", "look", "mine", "ok"}
+VALID_PING_TYPES = {"help", "move", "mine", "ok"}
 
 # state_pong은 play_game 루프에서 초당 몇 프레임(fps, 기본 6)마다 브로드캐스트된다.
 # 12틱 ≈ 2초(6fps 기준) 동안 말풍선을 화면에 유지한다.
@@ -73,8 +79,16 @@ class PingMixin:
         if ping_type not in VALID_PING_TYPES:
             # 알 수 없는 핑 타입은 조용히 무시 (원본처럼 KeyError로 게임을 죽이지 않음)
             return
+        # "move"(비켜줘) 핑에 반응하려면 PingReactiveBot이 "보낸 사람이 지금
+        # 어디 서 있는지"를 매 틱 state.players[sender_idx]로 조회해야 한다
+        # (role_restricted_bot.py의 _decide_move_aside_action 참고). 그래서
+        # player_id(소켓/플레이어 식별자) 말고 players 리스트에서의 정수
+        # 인덱스도 같이 넘겨준다 — 봇 쪽에선 player_id 문자열이 무슨 뜻인지
+        # 몰라도 되게.
+        sender_idx = self.players.index(player_id)
         entry = {
             "player_id": player_id,
+            "sender_idx": sender_idx,
             "ping_type": ping_type,
             "timestamp": time.time(),
             "step": getattr(self, "curr_tick", None),
@@ -97,10 +111,29 @@ class PingMixin:
         }
 
     def _route_ping_to_npc_bots(self, entry):
-        """PingReactiveBot(= ping_queue 속성을 가진 정책)에 방금 들어온 핑을 즉시 전달."""
-        for policy in getattr(self, "npc_policies", {}).values():
+        """PingReactiveBot(= ping_queue 속성을 가진 정책)에 방금 들어온 핑을 즉시 전달.
+
+        "핑에 대해 반응이 전혀 없는 것 같다"는 피드백(2026-10-04) 원인은 사실
+        두 가지가 섞여 있었다:
+          1) _show_ping_on_screen()이 "보낸 사람" 머리 위에만 말풍선을 띄워서,
+             받는 쪽(=상대 인간 참가자)은 자기 핑이 화면에 뜨는 건 보지만
+             "봇이 그 핑을 들었다"는 걸 알 길이 전혀 없었다.
+          2) 실제 행동 반응(role_restricted_bot.py의 _PING_RESPONSE_MAP)은
+             REACTION_DELAY_STEPS만큼 지연 후에만 나타나므로, 반응이 있어도
+             "봇이 지금 막 하던 동작을 계속하는 것"과 구분이 안 됐다.
+        그래서 여기서 핑을 받는 "즉시"(지연 없이) 그 봇 캐릭터 머리 위에 OK
+        말풍선을 띄운다 — 사람이 보낸 핑 하나당 "들었다"는 시각적 확인을
+        먼저 주고, 실제 행동 변화(위 2번)는 기존 그대로 약간의 지연을 두고
+        뒤따라온다. _enqueue_ping()의 full 파이프라인(= self._pending_pings에
+        append해 trajectory로깅까지 가는 경로)을 타지 않고 _show_ping_on_screen()
+        만 직접 호출하는 이유: 이건 실제로 "참가자가 보낸 핑"이 아니라 봇이
+        합성해서 보여주는 수신확인 표시일 뿐이라, 핑 발생 횟수 등 사람 핑
+        관련 연구 지표(trajectory의 "pings" 필드)에 끼어들면 안 되기 때문.
+        """
+        for bot_player_id, policy in getattr(self, "npc_policies", {}).items():
             if hasattr(policy, "ping_queue"):
                 policy.ping_queue.append(entry)
+                self._show_ping_on_screen(bot_player_id, "ok")
 
     def apply_actions(self):
         result = super(PingMixin, self).apply_actions()

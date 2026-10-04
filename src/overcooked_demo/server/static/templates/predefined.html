@@ -90,12 +90,19 @@
         <h4 id="game-over" style="display:none">Game Over</h4>
         <div id="overcooked"></div>
         <!-- Phase 2: 핑 소통 채널 버튼. 클릭하면 기존 action 이벤트로
-             PING_HELP/LOOK/MINE/OK 문자열을 그대로 보낸다 (서버는 이미 처리함). -->
+             PING_HELP/MOVE/MINE/OK 문자열을 그대로 보낸다 (서버는 이미 처리함).
+             마우스로 클릭하기 어렵다는 피드백(2026-10-04)으로 숫자키 1~4
+             단축키를 추가했고(predefined.js의 PING_KEY_TO_TYPE), 버튼에도
+             "(1)"처럼 해당 키를 같이 보여줘서 참가자가 바로 알 수 있게 했다.
+             "비켜줘"(move)는 같은 날 "이거 봐"(look) 자리를 교체한 것 —
+             look은 행동 변화가 전혀 없어 "핑이 직관적이지 않다"는 피드백의
+             원인이었다. 서로 길을 막았을 때 쓰는, 실제로 봇이 비켜주는
+             게임에 직접 영향을 주는 핑으로 바꿨다. -->
         <div id="ping-controls" class="text-center" style="display:none; margin-top: 10px;">
-            <button id="ping-help" class="btn btn-warning">도와줘</button>
-            <button id="ping-look" class="btn btn-info">이거 봐</button>
-            <button id="ping-mine" class="btn btn-success">내가 할게</button>
-            <button id="ping-ok" class="btn btn-secondary">OK</button>
+            <button id="ping-help" class="btn btn-warning">도와줘 (1)</button>
+            <button id="ping-move" class="btn btn-info">비켜줘 (2)</button>
+            <button id="ping-mine" class="btn btn-success">내가 할게 (3)</button>
+            <button id="ping-ok" class="btn btn-secondary">OK (4)</button>
         </div>
         <div id="error" style="display:none">Game ended unexpectedly (probably due to other user disconnecting)</div>
         <div id="reset-game", class="text-center" style="display:none">

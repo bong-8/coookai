@@ -88,6 +88,39 @@ MAX_FPS = CONFIG["MAX_FPS"]
 # 보수적으로 10을 택했다(그에 맞춰 REACTION_DELAY_STEPS도 같이 조정함).
 GAME_TICK_FPS = MAX_FPS
 
+# graphics/overcooked_graphics_v2.2.js 소스를 실제 서버가 서빙하는
+# static/js/graphics.js로 "항상" 복사한다 (실험용 셋업의 자동화).
+#
+# 왜 필요한가: 원래 이 파일은 Docker 빌드 시점에 `COPY ./graphics/$GRAPHICS
+# ./static/js/graphics.js`로 한 번 복사되는 것을 가정한 구조다(Dockerfile
+# 참고). 그런데 우리는 Docker 없이 로컬 venv에서 python app.py로 바로
+# 돌리므로, graphics/overcooked_graphics_v2.2.js를 수정해도 브라우저는
+# 여전히 예전 static/js/graphics.js를 그대로 서빙받는다 — 실제로
+# "order가 아직도 텍스트야"라는 재현된 피드백의 직접적 원인이었다(아이콘
+# 복원 수정은 소스 파일에만 적용되고, 서빙되는 파일은 옛 텍스트 버전으로
+# 남아있었음을 diff로 직접 확인함, 2026-10-04). 매번 "복사했는지 기억하기"
+# 에 의존하는 대신, 서버 기동 시마다 소스를 신뢰 가능한 단일 지점(source of
+# truth)으로 보고 target에 그대로 덮어써서 이 문제 자체를 구조적으로
+# 없앤다. 소스 경로는 config.json의 "GRAPHICS_SOURCE"로 바꿀 수 있게
+# 해둔다(기본값: overcooked_graphics_v2.2.js).
+import filecmp
+import shutil
+
+GRAPHICS_SOURCE_NAME = CONFIG.get("GRAPHICS_SOURCE", "overcooked_graphics_v2.2.js")
+_graphics_src = os.path.join(os.path.dirname(__file__), "graphics", GRAPHICS_SOURCE_NAME)
+_graphics_dst = os.path.join(os.path.dirname(__file__), "static", "js", "graphics.js")
+if os.path.exists(_graphics_src):
+    if not os.path.exists(_graphics_dst) or not filecmp.cmp(
+        _graphics_src, _graphics_dst, shallow=False
+    ):
+        shutil.copyfile(_graphics_src, _graphics_dst)
+        print(
+            f"[graphics 자동 동기화] {_graphics_src} -> {_graphics_dst} "
+            f"(내용이 달라서 덮어씀. 수동으로 static/js/graphics.js를 복사할 필요 없음)"
+        )
+else:
+    print(f"[graphics 자동 동기화 경고] 소스 파일을 찾을 수 없음: {_graphics_src}")
+
 # Default configuration for predefined experiment
 PREDEFINED_CONFIG = json.dumps(CONFIG["predefined"])
 
@@ -303,7 +336,20 @@ def _create_game(user_id, game_name, params={}):
     with game.lock:
         if not game.is_full():
             spectating = False
-            game.add_player(user_id)
+            # buff_size=1로 명시한 이유(실제 플레이테스트로 발견한 버그, 2026-10-04):
+            # 원래 human 플레이어는 game.add_player()의 기본값 buff_size=-1을 그대로
+            # 받아 pending_actions가 "무제한" Queue였다. 그런데 predefined.js가 서버
+            # 틱(100ms)보다 살짝 빠른 80ms 간격으로 계속 방향키 액션을 enqueue하고,
+            # game.py의 apply_actions()는 human 쪽에서 틱당 딱 1개만(get(block=False))
+            # 소비하므로, 큐에 처리 못한 입력이 시간이 지날수록 한도 없이 계속
+            # 쌓였다 — "유저와 봇의 속도가 점점 벌어진다"는 피드백의 실제 원인
+            # (봇은 매 틱 즉석에서 결정하므로 큐 자체가 없어 이 문제가 없음). NPC 봇에는
+            # 원래부터 buff_size=1(line ~454/462)이 쓰이고 있어 큐가 항상 0~1개로
+            # 유지되는데, human에는 이게 빠져 있었다. 그래서 human도 동일하게
+            # buff_size=1로 맞췄다 — enqueue_action()의 Queue.put()은 꽉 차 있으면
+            # (block=True 기본값이라) 다음 틱이 그 자리를 비울 때까지 잠깐 대기하므로,
+            # 큐 길이가 항상 최대 1로 저절로 제한되고 입력이 밀려 쌓이는 일이 없다.
+            game.add_player(user_id, buff_size=1)
         else:
             spectating = True
             game.add_spectator(user_id)
@@ -606,7 +652,10 @@ def on_join(data):
             with game.lock:
                 join_room(game.id)
                 set_curr_room(user_id, game.id)
-                game.add_player(user_id)
+                # buff_size=1 설명은 위쪽 _create_game()의 동일 호출부 주석 참고 —
+                # 두 번째 참가자(on_join 경로)로 들어오는 human에도 똑같이 적용해야
+                # 입력 큐 무제한 누적 버그가 생기지 않는다.
+                game.add_player(user_id, buff_size=1)
 
                 if game.is_ready():
                     # Game is ready to begin play

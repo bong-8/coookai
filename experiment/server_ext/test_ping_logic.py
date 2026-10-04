@@ -42,7 +42,12 @@ from overcooked_ai_py.planning.planners import (
 )
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
 
-from experiment.agents.role_restricted_bot import PingReactiveBot
+from experiment.agents.role_restricted_bot import (
+    PingReactiveBot,
+    MOVE_ASIDE_GRACE_TICKS,
+    _bfs_first_step_avoiding,
+    _best_retreat_step,
+)
 from experiment.analysis.compute_metrics import compute_all_metrics
 from experiment.server_ext.ping_game import (
     PingMixin,
@@ -197,6 +202,35 @@ def test_ping_routes_to_real_reactive_bot():
     print("  PASS (봇의 ping_queue에 실제로 들어감)\n")
 
 
+def test_bot_shows_ok_ack_bubble_immediately_on_ping():
+    print("=== Test 5b: 사람이 핑을 보내면 '즉시'(지연 없이) 봇 머리 위에 OK 말풍선이 뜨는지 ===")
+    # "핑에 대해 반응이 전혀 없는 것 같다"는 피드백(2026-10-04)의 수정 검증.
+    # _show_ping_on_screen()이 보낸 사람(human_0, idx=0)뿐 아니라 봇
+    # (bot_1, idx=1)에도 동시에 뜨는지, 그리고 그게 REACTION_DELAY_STEPS를
+    # 기다리지 않고 "그 즉시" 뜨는지가 핵심이다 (실제 행동 반응은 지연되지만,
+    # "들었다"는 시각적 확인은 지연되면 안 됨).
+    bot = make_bot()
+    game = TestGame(players=["human_0", "bot_1"], npc_policies={"bot_1": bot})
+    assert game.get_state()["pings"] == {}
+
+    game.enqueue_action("human_0", "PING_MINE")
+    state = game.get_state()
+    assert state["pings"] == {"0": "mine", "1": "ok"}, state
+    print("  PASS (보낸 사람=idx0='mine' 그대로, 받는 봇=idx1='ok' 수신확인 동시 표시)\n")
+
+    # 이 합성 ack는 실제 "사람이 보낸 핑"이 아니므로 trajectory 로깅(연구
+    # 지표용 pings 필드)에는 섞여 들어가면 안 된다 — _enqueue_ping()의 전체
+    # 파이프라인(= self._pending_pings.append)을 타지 않고 _show_ping_on_screen()
+    # 만 직접 호출했는지를 이 assert로 확인한다.
+    game.tick()
+    assert len(game.trajectory[-1]["pings"]) == 1, (
+        "합성 OK ack가 트라젝토리 로깅에 잘못 섞여 들어감: "
+        f"{game.trajectory[-1]['pings']}"
+    )
+    assert game.trajectory[-1]["pings"][0]["player_id"] == "human_0"
+    print("  PASS (합성 ack는 트라젝토리 로깅을 오염시키지 않음)\n")
+
+
 def test_tick_calls_note_step_on_bot():
     print("=== Test 6: tick()마다 봇의 note_step()이 호출되어 반응 지연 계산이 진행되는지 ===")
     bot = make_bot()
@@ -323,6 +357,12 @@ def test_help_ping_clears_all_exclusions():
     original = rrb.RoleRestrictedBot.ml_action
     rrb.RoleRestrictedBot.ml_action = lambda self, state: fake_super_ml_action(state)
     try:
+        # 2026-10-04 "비켜줘" 추가 이후: 큐를 비우고 "즉시성" 핑(help/mine/ok)
+        # 을 꺼내는 일은 action()이 담당하도록 바뀌었다(move 핑과 채널을
+        # 분리하려고). ml_action()은 action()이 채워준 _pending_instant_entry
+        # 하나만 소비한다 — 그래서 ml_action()을 직접 테스트할 때도 그 계약을
+        # 그대로 따라 _drain_ping_queue()를 먼저 호출해줘야 한다.
+        bot._pending_instant_entry = bot._drain_ping_queue()
         bot.ml_action("fake_state")
     finally:
         rrb.RoleRestrictedBot.ml_action = original
@@ -391,6 +431,119 @@ def test_bot_drops_undeliverable_soup_on_counter_instead_of_stalling():
     print("  PASS (봇이 배달 대신 카운터에 수프를 내려놓고 멈추지 않음)\n")
 
 
+def test_move_aside_bfs_helpers():
+    print("=== Test 14: '비켜줘' 핑의 핵심 로직(그리드 BFS 우회/후퇴) 단위 테스트 ===")
+    from overcooked_ai_py.mdp.actions import Direction
+
+    # 3x3 완전 개방 격자: (1,1)에서 (1,1)인 blocked를 피해 (1,-1)에서 (1,1)로
+    # 가는 대안이 존재해야 함 (돌아갈 길이 있는 경우).
+    open_grid = {(x, y) for x in range(-1, 2) for y in range(-1, 2)}
+    step = _bfs_first_step_avoiding(open_grid, (-1, 0), (1, 0), blocked=(0, 0))
+    assert step is not None, "열린 격자인데 우회로를 못 찾음"
+    # 첫 걸음이 blocked 칸으로 바로 들어가면 안 됨
+    from overcooked_ai_py.mdp.actions import Action
+    assert Action.move_in_direction((-1, 0), step) != (0, 0)
+    print(f"  PASS (열린 격자: blocked=(0,0) 피해서 첫 걸음={step})")
+
+    # 1칸짜리 외길: (0,0)-(1,0)-(2,0) 뿐이고 (1,0)이 막히면 우회로가 전혀 없어야 함.
+    corridor = {(0, 0), (1, 0), (2, 0)}
+    step = _bfs_first_step_avoiding(corridor, (0, 0), (2, 0), blocked=(1, 0))
+    assert step is None, f"외길인데 우회로가 있다고 나옴: {step}"
+    print("  PASS (진짜 외길에서는 우회로 없음 -> None)")
+
+    # 후퇴 방향: (1,0)에서 blocked=(2,0)이면 반대쪽인 (0,0) 방향(WEST)으로
+    # 물러나야 함 (해당 칸으로 이어지는 방향이 west뿐인 외길 기준).
+    retreat = _best_retreat_step(corridor, (1, 0), blocked=(2, 0))
+    assert retreat == Direction.WEST, f"blocked에서 먼 쪽(WEST)이 아니라 {retreat}로 후퇴"
+    print("  PASS (후퇴는 항상 막힌 칸에서 더 멀어지는 방향으로)\n")
+
+
+def test_move_ping_reroutes_around_blocker_in_open_area():
+    print("=== Test 15: '비켜줘' 핑 + 인접 상태 -> 열린 공간에서는 그 즉시 "
+          "대안 경로로 우회(대기 없이)하는지 (실제 cramped_room 레이아웃) ===")
+    # cramped_room은 (1,1)~(3,2) 2x3 열린 블록이라 항상 돌아갈 길이 있다
+    # (교착 방지 2단계/3단계까지 안 가고 1단계에서 바로 풀려야 하는 경우).
+    mdp = OvercookedGridworld.from_layout_name("cramped_room")
+    mlam = MediumLevelActionManager(mdp, NO_COUNTERS_PARAMS)
+    bot = PingReactiveBot(mlam, excluded_roles=[], ping_queue=deque())
+    bot.set_agent_index(0)
+
+    state = mdp.get_standard_start_state()
+    # 사람(플레이어 1)을 봇(플레이어 0) 바로 옆(인접)에 세워 "막힌" 상황을 만든다.
+    bot_pos = state.players[0].position  # (1, 2)
+    human_pos = (bot_pos[0] + 1, bot_pos[1])  # (2, 2) — 바로 옆 칸
+    state.players[1].position = human_pos
+
+    bot.ping_queue.append({"ping_type": "move", "step": 0, "sender_idx": 1})
+    bot._curr_step = 0
+
+    action0, _ = bot.action(state)
+    assert action0 != "interact", action0
+    from overcooked_ai_py.mdp.actions import Action as _Action
+    new_pos = _Action.move_in_direction(bot_pos, action0) if action0 in (
+        (0, -1), (0, 1), (1, 0), (-1, 0)
+    ) else bot_pos
+    assert new_pos != human_pos, (
+        f"봇이 사람이 서 있는 칸({human_pos})으로 그대로 이동하려 함: action={action0}"
+    )
+    assert new_pos != bot_pos, (
+        "열린 공간(대안 경로가 분명히 있음)인데 봇이 STAY만 하고 있음 — "
+        "1단계(대안 경로 탐색)가 즉시 작동해야 하는 상황"
+    )
+    print(f"  PASS (인접 즉시, 대기 없이 대안 경로로 이동: action={action0}, "
+          f"{bot_pos} -> {new_pos})\n")
+
+
+def test_move_ping_waits_then_forces_retreat_in_dead_end():
+    print("=== Test 16: '비켜줘' 핑인데 대안 경로가 전혀 없으면(외길) "
+          "유예(MOVE_ASIDE_GRACE_TICKS) 동안 대기 후 반드시 후퇴하는지 "
+          "(교착상태 방지 핵심 로직 회귀 방지) ===")
+    mdp = OvercookedGridworld.from_layout_name("cramped_room")
+    mlam = MediumLevelActionManager(mdp, NO_COUNTERS_PARAMS)
+    bot = PingReactiveBot(mlam, excluded_roles=[], ping_queue=deque())
+    bot.set_agent_index(0)
+
+    # 실제 레이아웃은 열려 있어서 "외길"을 자연스럽게 재현하기 어려우니,
+    # _decide_move_aside_action이 참조하는 walkable 집합 자체를 1칸짜리
+    # 외길로 좁혀서(테스트 전용) 교착 방지 로직만 떼어내 검증한다. 목적지
+    # 조회(_current_goal_position)는 몽키패치로 "도달 불가능한 먼 칸"을
+    # 돌려주게 해서, 1단계(대안 경로)가 항상 실패하도록 강제한다.
+    bot._walkable_positions = {(0, 0), (1, 0), (2, 0)}
+    bot._current_goal_position = lambda state: (99, 99)  # 외길 밖, 절대 도달 불가
+
+    bot.ping_queue.append({"ping_type": "move", "step": 0, "sender_idx": 1})
+    bot._curr_step = 0
+
+    my_pos = (1, 0)
+    sender_pos = (2, 0)  # 1칸 외길에서 바로 옆 칸을 막고 있음, 우회 불가능
+
+    actions_seen = []
+    for tick in range(MOVE_ASIDE_GRACE_TICKS + 3):
+        bot._curr_step = tick
+        action = bot._decide_move_aside_action(
+            type("FakeState", (), {})(), my_pos, sender_pos
+        )
+        actions_seen.append(action)
+
+    from overcooked_ai_py.mdp.actions import Action as _Action
+    # 유예 기간 동안은(마지막 틱 전까지) 전부 STAY여야 함
+    assert all(a == _Action.STAY for a in actions_seen[:MOVE_ASIDE_GRACE_TICKS]), (
+        f"유예 기간인데 STAY가 아닌 행동이 나옴: {actions_seen[:MOVE_ASIDE_GRACE_TICKS]}"
+    )
+    # 유예가 끝난 뒤에는 반드시(선택이 아니라 확정) 후퇴해야 함 -> STAY가 아님
+    forced = actions_seen[MOVE_ASIDE_GRACE_TICKS]
+    assert forced != _Action.STAY, (
+        f"유예가 끝났는데도 여전히 STAY임 — 교착상태 방지(강제 후퇴)가 작동 안 함: {forced}"
+    )
+    # 후퇴 방향이 실제로 sender_pos(2,0)에서 멀어지는 쪽(WEST=(0,0) 방향)인지
+    new_pos = _Action.move_in_direction(my_pos, forced)
+    assert abs(new_pos[0] - sender_pos[0]) > abs(my_pos[0] - sender_pos[0]), (
+        f"'후퇴'인데 오히려 사람 쪽으로 가까워짐: {my_pos} -> {new_pos} (sender={sender_pos})"
+    )
+    print(f"  PASS (유예 {MOVE_ASIDE_GRACE_TICKS}틱 동안 대기 -> 그 다음 틱에 "
+          f"반드시 후퇴: {forced})\n")
+
+
 def test_end_to_end_logging_and_metrics():
     print("=== Test 7 (End-to-End): 핑 채널 -> trajectory 로깅 -> compute_metrics.py 연결 테스트 ===")
     bot = make_bot()
@@ -432,6 +585,7 @@ if __name__ == "__main__":
     test_unknown_ping_type_ignored()
     test_pings_land_in_trajectory()
     test_ping_routes_to_real_reactive_bot()
+    test_bot_shows_ok_ack_bubble_immediately_on_ping()
     test_tick_calls_note_step_on_bot()
     test_ping_appears_in_get_state()
     test_ping_disappears_after_display_window()
@@ -439,5 +593,8 @@ if __name__ == "__main__":
     test_real_bot_update_for_layout_rebuilds_mlam_for_new_layout()
     test_help_ping_clears_all_exclusions()
     test_bot_drops_undeliverable_soup_on_counter_instead_of_stalling()
+    test_move_aside_bfs_helpers()
+    test_move_ping_reroutes_around_blocker_in_open_area()
+    test_move_ping_waits_then_forces_retreat_in_dead_end()
     test_end_to_end_logging_and_metrics()
     print("Phase 2 전체(핑 채널 + 봇 반응 + 로깅 + 지표 계산) 테스트 통과.")
