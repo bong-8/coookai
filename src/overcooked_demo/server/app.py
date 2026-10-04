@@ -385,11 +385,18 @@ def predefined():
     uid = request.args.get("UID")
     num_layouts = len(CONFIG["predefined"]["experimentParams"]["layouts"])
 
+    # 시작 화면에서 Player 1/2/레이아웃을 바꿔볼 수 있게(연구자 테스트 편의용 —
+    # 참가자는 이 화면을 건드릴 필요 없이 기본값 그대로 "시작하기"만 누르면 됨).
+    # 기본값은 여전히 config.json의 predefined.experimentParams를 그대로 씀.
+    agent_names = get_agent_names()
+
     return render_template(
         "predefined.html",
         uid=uid,
         config=PREDEFINED_CONFIG,
         num_layouts=num_layouts,
+        agent_names=agent_names,
+        all_layouts=LAYOUTS,
     )
 
 

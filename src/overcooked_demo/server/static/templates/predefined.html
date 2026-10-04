@@ -38,6 +38,41 @@
         <p>
             <a href="./instructions" target="_blank">게임 방법 자세히 보기</a>
         </p>
+
+        <!-- 연구자용 테스트 설정(참가자는 건드릴 필요 없음 — 기본값이 바로
+             config.json의 predefined.experimentParams라 그냥 "시작하기"만
+             누르면 평소와 동일하게 동작함). Player 1/2/난이도를 바꿔서 빠르게
+             테스트해보고 싶을 때만 사용. -->
+        <div class="form-row justify-content-center" style="margin-bottom: 20px;">
+            <div class="form-group col-lg-3">
+                <label for="override-playerZero" style="color:#1E6A9E">Player 1</label>
+                <select class="form-control" id="override-playerZero">
+                    <option value="human">사람 (키보드 입력)</option>
+                    {% for agent_name in agent_names %}
+                    <option value="{{ agent_name }}">{{ agent_name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group col-lg-3">
+                <label for="override-playerOne" style="color:#44956B">Player 2</label>
+                <select class="form-control" id="override-playerOne">
+                    <option value="human">사람 (키보드 입력)</option>
+                    {% for agent_name in agent_names %}
+                    <option value="{{ agent_name }}">{{ agent_name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group col-lg-3">
+                <label for="override-layout">Layout</label>
+                <select class="form-control" id="override-layout">
+                    <option value="__default__">기본값 (난이도 {{ num_layouts }}단계 전체)</option>
+                    {% for layout in all_layouts %}
+                    <option value="{{ layout }}">{{ layout }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+
         <button id="start-btn" class="btn btn-primary btn-lg">시작하기</button>
     </div>
 

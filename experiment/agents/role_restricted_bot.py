@@ -159,13 +159,28 @@ class RoleRestrictedBot(GreedyHumanModel):
 
 
 # ── Phase 3: 핑 반응 ────────────────────────────────────────────────
-# ping_type -> 반응 시 우선적으로 배제할 역할(=상대에게 양보) 매핑.
-# TODO: 파일럿에서 실제 핑 목록(3~5종) 확정되면 갱신
+# ping_type별 반응 규칙. "ALL"은 excluded_roles를 일시적으로 전부 해제(=봇이
+# 평소엔 피하던 일(배달 등)까지 포함해 그 순간 가장 효율적인 행동을 함),
+# 역할 이름(예: "deliver")은 그 역할을 일시적으로 상대에게 "양보"(제외 목록에
+# 추가), None은 행동 변화 없음(로깅만).
+#
+# 실제 브라우저로 플레이해보며 확정한 규칙(2026-10-03):
+#   - help(도와줘): 제한 전부 해제 → 가장 급한 일(배달 등)을 봇이 직접 처리.
+#     예전엔 "냄비에 재료가 일부 들어있을 때만" 반응하게 짜여 있어서 그 조건이
+#     안 맞으면 평소랑 똑같이 행동해버려 "반응 안 하는 것처럼" 보이는 문제가
+#     있었다 — 조건 없이 항상 반응하도록 단순화했다. 다만 이 순간 "제한 때문에
+#     못 하고 있던 일"이 아예 없으면(예: 배달할 수프도 없고 할 일이 전부 허용
+#     범위 안이면) 그래도 티가 안 날 수 있음 — 완전히 보장되는 건 아니라서
+#     파일럿 전에 지도교수님과 "뭘 해야 '도움'으로 느껴지는지" 확정 필요.
+#   - look(이거 봐): 행동 변화 없음(주의 환기용, 로깅만) — 그대로 유지.
+#   - mine(내가 할게): "deliver" 역할을 일시적으로 상대에게 양보(기존 그대로).
+#   - ok(OK): 행동 변화 없음 — 그대로 유지.
+# TODO: 파일럿에서 실제 핑 목록(3~5종)과 반응 규칙 최종 확정되면 갱신
 _PING_RESPONSE_MAP = {
-    "help": None,       # 도와줘: 상대 근처 병목 작업으로 이동 (아래 _respond_to_help)
-    "look": None,       # 이거 봐: 별도 행동 변화 없음 (주의 환기용, 로깅만)
-    "mine": "deliver",  # 내가 할게: 배달 역할을 상대에게 양보
-    "ok": None,          # OK: 행동 변화 없음
+    "help": "ALL",
+    "look": None,
+    "mine": "deliver",
+    "ok": None,
 }
 
 REACTION_DELAY_STEPS = 3  # 약 0.5~1초 상당(스텝 길이에 따라 조정) 지연 후 반응
@@ -201,35 +216,23 @@ class PingReactiveBot(RoleRestrictedBot):
         entry = self._latest_unconsumed_ping()
         if entry is not None:
             ping_type = entry["ping_type"]
-            role_to_yield = _PING_RESPONSE_MAP.get(ping_type)
-            if role_to_yield:
-                # 지정된 역할을 일시적으로 제외 목록에 추가 (상대에게 양보)
+            rule = _PING_RESPONSE_MAP.get(ping_type)
+            if rule == "ALL":
+                # 도와줘: 제한을 전부 일시 해제하고 그 순간 가장 효율적인
+                # 행동(배달 등 평소 제한된 역할 포함)을 하도록 함.
                 original = set(self.excluded_roles)
-                self.excluded_roles = original | {role_to_yield}
+                self.excluded_roles = set()
                 try:
                     return super().ml_action(state)
                 finally:
                     self.excluded_roles = original
-            if ping_type == "help":
-                return self._respond_to_help(state)
-        return super().ml_action(state)
-
-    def _respond_to_help(self, state):
-        """
-        '도와줘' 핑: 상대 근처의 병목 작업(냄비 채우기 등)으로 목표를 옮긴다.
-        TODO: 파일럿에서 "병목 작업"의 정의(어떤 pot 상태를 우선할지) 확정
-        """
-        pot_states_dict = self.mlam.mdp.get_pot_states(state)
-        partially_full = self.mlam.mdp.get_partially_full_pots(pot_states_dict)
-        if partially_full:
-            goals = self.mlam.put_onion_in_pot_actions(pot_states_dict)
-            player = state.players[self.agent_index]
-            goals = [
-                mg for mg in goals
-                if self.mlam.motion_planner.is_valid_motion_start_goal_pair(
-                    player.pos_and_or, mg
-                )
-            ]
-            if goals:
-                return goals
+            elif rule:
+                # 지정된 역할을 일시적으로 제외 목록에 추가 (상대에게 양보)
+                original = set(self.excluded_roles)
+                self.excluded_roles = original | {rule}
+                try:
+                    return super().ml_action(state)
+                finally:
+                    self.excluded_roles = original
+            # rule이 None(look/ok)이면 행동 변화 없이 아래로 그대로 진행
         return super().ml_action(state)

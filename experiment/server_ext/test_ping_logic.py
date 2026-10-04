@@ -301,6 +301,40 @@ def test_real_bot_update_for_layout_rebuilds_mlam_for_new_layout():
     print("  PASS (mlam이 coordination_ring 전용으로 교체됨, agent_index/excluded_roles 유지)\n")
 
 
+def test_help_ping_clears_all_exclusions():
+    print("=== Test 12: '도와줘' 핑을 받으면 excluded_roles가 일시적으로 전부 "
+          "해제되는지(실제 브라우저 플레이에서 '반응이 없다'는 피드백으로 단순화) ===")
+    bot = make_bot()  # excluded_roles=[] — 구분을 위해 직접 세팅
+    bot.excluded_roles = {"deliver"}
+    bot.set_agent_index(1)
+    bot.ping_queue.append({"ping_type": "help", "step": 0})
+    bot._curr_step = 0
+
+    calls = []
+
+    def fake_super_ml_action(state):
+        # 호출 시점의 excluded_roles 스냅샷을 기록 (실제 motion goal 계산은
+        # 이 테스트의 관심사가 아님 — RoleRestrictedBot.ml_action을 그대로
+        # 몽키패치해서 "무엇을 넘겨받는지"만 확인)
+        calls.append(set(bot.excluded_roles))
+        return ["dummy_goal"]
+
+    import experiment.agents.role_restricted_bot as rrb
+    original = rrb.RoleRestrictedBot.ml_action
+    rrb.RoleRestrictedBot.ml_action = lambda self, state: fake_super_ml_action(state)
+    try:
+        bot.ml_action("fake_state")
+    finally:
+        rrb.RoleRestrictedBot.ml_action = original
+
+    assert calls == [set()], (
+        f"'help' 핑 처리 중에는 excluded_roles가 비어 있어야 하는데 {calls}"
+    )
+    # 핑 처리 끝난 뒤에는 원래 제외 목록(deliver)으로 복원돼야 함
+    assert bot.excluded_roles == {"deliver"}, bot.excluded_roles
+    print("  PASS (처리 중엔 제한 전부 해제, 끝나면 원래대로 복원)\n")
+
+
 def test_end_to_end_logging_and_metrics():
     print("=== Test 7 (End-to-End): 핑 채널 -> trajectory 로깅 -> compute_metrics.py 연결 테스트 ===")
     bot = make_bot()
@@ -347,5 +381,6 @@ if __name__ == "__main__":
     test_ping_disappears_after_display_window()
     test_activate_propagates_new_mdp_to_policies_with_update_hook()
     test_real_bot_update_for_layout_rebuilds_mlam_for_new_layout()
+    test_help_ping_clears_all_exclusions()
     test_end_to_end_logging_and_metrics()
     print("Phase 2 전체(핑 채널 + 봇 반응 + 로깅 + 지표 계산) 테스트 통과.")

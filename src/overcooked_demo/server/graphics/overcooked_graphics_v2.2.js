@@ -410,30 +410,40 @@ class OvercookedScene extends Phaser.Scene {
         }
     }
 
+    // 오더를 "양파 수프 x2" 같은 한국어 텍스트로 바꿔서 보여준다 (원래는 작은
+    // 아이콘만 있어서 뭘 요구하는 주문인지 한눈에 안 들어온다는 피드백으로 추가).
+    // ingredients: [{"name": "onion"}, ...] 형태 -> 재료 구성별로 묶어서 개수 표시.
+    _orderIngredientsLabel(ingredients) {
+        let names = ingredients.map(x => x['name']);
+        let numOnion = names.filter(n => n === 'onion').length;
+        let numTomato = names.filter(n => n === 'tomato').length;
+        let parts = [];
+        if (numOnion > 0) { parts.push(`양파${numOnion}`); }
+        if (numTomato > 0) { parts.push(`토마토${numTomato}`); }
+        if (parts.length === 0) { return "수프"; }
+        return parts.join('+') + " 수프";
+    }
+
+    _ordersToText(orders) {
+        // 같은 구성의 오더가 여러 개면 "양파3 수프 x2"처럼 묶어서 보여준다.
+        let counts = {};
+        let order = [];
+        for (let i = 0; i < orders.length; i++) {
+            let label = this._orderIngredientsLabel(orders[i]['ingredients']);
+            if (!counts.hasOwnProperty(label)) {
+                counts[label] = 0;
+                order.push(label);
+            }
+            counts[label] += 1;
+        }
+        return order.map(label => counts[label] > 1 ? `${label} x${counts[label]}` : label).join(', ');
+    }
+
     _drawBonusOrders(orders, sprites, board_height) {
         if (typeof(orders) !== 'undefined' && orders !== null) {
-            let orders_str = "Bonus Orders: ";
+            let orders_str = "Bonus Orders: " + this._ordersToText(orders);
             if (typeof(sprites['bonus_orders']) !== 'undefined') {
-                // Clear existing orders
-                sprites['bonus_orders']['orders'].forEach(element => {
-                    element.destroy();
-                });
-                sprites['bonus_orders']['orders'] = [];
-
-                // Update with new orders
-                for (let i = 0; i < orders.length; i++) {
-                    let spriteFrame = this._ingredientsToSpriteFrame(orders[i]['ingredients'], "done");
-                    let orderSprite = this.add.sprite(
-                        130 + 40 * i,
-                        board_height + 40,
-                        "soups",
-                        spriteFrame
-                    );
-                    sprites['bonus_orders']['orders'].push(orderSprite);
-                    orderSprite.setDisplaySize(60, 60);
-                    orderSprite.setOrigin(0);
-                    orderSprite.depth = 1;
-                }
+                sprites['bonus_orders']['str'].setText(orders_str);
             }
             else {
                 sprites['bonus_orders'] = {};
@@ -445,35 +455,15 @@ class OvercookedScene extends Phaser.Scene {
                         align: "left"
                     }
                 )
-                sprites['bonus_orders']['orders'] = []
             }
         }
     }
 
     _drawAllOrders(orders, sprites, board_height) {
         if (typeof(orders) !== 'undefined' && orders !== null) {
-            let orders_str = "All Orders: ";
+            let orders_str = "All Orders: " + this._ordersToText(orders);
             if (typeof(sprites['all_orders']) !== 'undefined') {
-                // Clear existing orders
-                sprites['all_orders']['orders'].forEach(element => {
-                    element.destroy();
-                });
-                sprites['all_orders']['orders'] = [];
-
-                // Update with new orders
-                for (let i = 0; i < orders.length; i++) {
-                    let spriteFrame = this._ingredientsToSpriteFrame(orders[i]['ingredients'], "done");
-                    let orderSprite = this.add.sprite(
-                        90 + 40 * i,
-                        board_height - 4,
-                        "soups",
-                        spriteFrame
-                    );
-                    sprites['all_orders']['orders'].push(orderSprite);
-                    orderSprite.setDisplaySize(60, 60);
-                    orderSprite.setOrigin(0);
-                    orderSprite.depth = 1;
-                }
+                sprites['all_orders']['str'].setText(orders_str);
             }
             else {
                 sprites['all_orders'] = {};
@@ -485,7 +475,6 @@ class OvercookedScene extends Phaser.Scene {
                         align: "left"
                     }
                 )
-                sprites['all_orders']['orders'] = []
             }
         }
     }
