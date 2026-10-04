@@ -364,6 +364,40 @@ def get_agent_names():
     ]
 
 
+# 실험 설계(experiment/README.md 중간 보고서 3.4절)상 본 실험의 AI 봇은
+# "규칙 기반 플래너" 단 한 종류뿐이다. static/assets/agents/ 폴더에는 원본
+# 공개 데모가 넣어둔 샘플 에이전트(RandAI, StayAI, Rllib*BC/SP 10종 등)도
+# 같이 들어있는데, 연구자용 시작 화면 드롭다운에 이게 전부 노출되면
+# (1) 실험과 무관한 에이전트를 실수로 고를 위험이 있고 (2) 실제로 그런
+# 실수가 "봇이 멍청하다"는 피드백의 원인이었을 가능성이 높다(StayAI는
+# 가만히 있고 RandAI는 무작위로 움직인다 — 둘 다 실험 봇이 아님).
+# 그래서 /predefined 화면에는 실험용 RuleBasedBot_* 5종만 노출한다.
+#
+# 난이도(layout, snake_case) -> 그 난이도에서 쓸 실험 봇 이름 매핑.
+# experiment/server_ext/ping_game.py의 update_for_layout 훅이 라운드마다
+# mlam을 새 레이아웃에 맞게 다시 계산해주므로, 1라운드 시작 시점에 로드되는
+# 피클이 "그 레이아웃의" 봇이기만 하면(=mlam이 처음부터 맞으면) 이후
+# 레이아웃 전환은 전부 자동으로 따라간다. 즉 이 매핑은 "1라운드째 어떤
+# 피클로 시작할지"를 정확히 고르기 위한 것이다.
+LAYOUT_TO_EXPERIMENT_BOT = {
+    "cramped_room": "RuleBasedBot_CrampedRoom",
+    "asymmetric_advantages": "RuleBasedBot_AsymmetricAdvantages",
+    "coordination_ring": "RuleBasedBot_CoordinationRing",
+    "forced_coordination": "RuleBasedBot_ForcedCoordination",
+    "counter_circuit": "RuleBasedBot_CounterCircuit",
+}
+
+
+def get_experiment_agent_names():
+    """실험용 봇만 걸러낸 목록(실제로 agent.pickle이 존재하는 것만)."""
+    all_names = set(get_agent_names())
+    return sorted(
+        name
+        for name in LAYOUT_TO_EXPERIMENT_BOT.values()
+        if name in all_names
+    )
+
+
 ######################
 # Application routes #
 ######################
@@ -385,18 +419,23 @@ def predefined():
     uid = request.args.get("UID")
     num_layouts = len(CONFIG["predefined"]["experimentParams"]["layouts"])
 
-    # 시작 화면에서 Player 1/2/레이아웃을 바꿔볼 수 있게(연구자 테스트 편의용 —
-    # 참가자는 이 화면을 건드릴 필요 없이 기본값 그대로 "시작하기"만 누르면 됨).
+    # 시작 화면의 "학습 조건"/"난이도" 선택은 연구자 테스트 편의용 —
+    # 참가자는 이 화면을 건드릴 필요 없이 기본값 그대로 "시작하기"만 누르면 됨.
     # 기본값은 여전히 config.json의 predefined.experimentParams를 그대로 씀.
-    agent_names = get_agent_names()
+    #
+    # 독립변인(학습 단계 파트너 유형: AI 봇 vs 인간)과 직접 대응하도록,
+    # 공개 데모처럼 "Player1=임의 에이전트, Player2=임의 에이전트"를 고르게
+    # 하는 대신 "학습 조건"(AI 봇 / 인간) 하나만 고르게 하고, 내부적으로
+    # LAYOUT_TO_EXPERIMENT_BOT을 통해 현재 난이도에 맞는 봇을 자동 매칭한다.
+    learning_layouts = CONFIG["predefined"]["experimentParams"]["layouts"]
 
     return render_template(
         "predefined.html",
         uid=uid,
         config=PREDEFINED_CONFIG,
         num_layouts=num_layouts,
-        agent_names=agent_names,
-        all_layouts=LAYOUTS,
+        learning_layouts=learning_layouts,
+        layout_to_bot=LAYOUT_TO_EXPERIMENT_BOT,
     )
 
 

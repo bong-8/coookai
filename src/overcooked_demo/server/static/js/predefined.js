@@ -238,17 +238,30 @@ function disable_ping_controls() {
  * Game Initialization *
  * * * * * * * * * * * */
 
+// 난이도(layout, snake_case) -> 그 난이도용 실험 봇 이름. app.py의
+// LAYOUT_TO_EXPERIMENT_BOT과 동일한 매핑(실험 봇은 RuleBasedBot_* 5종뿐 —
+// 공개 데모 샘플 에이전트는 애초에 참가자 화면에 노출하지 않는다).
+var LAYOUT_TO_BOT = {
+    'cramped_room': 'RuleBasedBot_CrampedRoom',
+    'asymmetric_advantages': 'RuleBasedBot_AsymmetricAdvantages',
+    'coordination_ring': 'RuleBasedBot_CoordinationRing',
+    'forced_coordination': 'RuleBasedBot_ForcedCoordination',
+    'counter_circuit': 'RuleBasedBot_CounterCircuit'
+};
+
 socket.on("connect", function() {
     // set configuration variables
     set_config();
+    // "학습 조건"/"난이도" 드롭다운은 항상 "기본값"에서 시작한다 — 아무것도
+    // 안 건드리고 "시작하기"만 누르면 config.json의 predefined.experimentParams
+    // 그대로(=참가자가 실제로 겪는 기본 흐름) 동작함.
+});
 
-    // 연구자용 Player 1/2 드롭다운 기본값을 config.json의
-    // predefined.experimentParams와 똑같이 맞춰둔다 — 아무것도 안 건드리고
-    // "시작하기"만 누르면 기존과 완전히 동일하게 동작함.
-    $('#override-playerZero').val(config.experimentParams.playerZero);
-    $('#override-playerOne').val(config.experimentParams.playerOne);
-    // 레이아웃은 항상 "기본값(난이도 전체)"가 디폴트 — 특정 레이아웃 하나로
-    // 바꾸고 싶을 때만 드롭다운에서 고르면 됨.
+$(function() {
+    // "인간 학습 집단" 조건을 고르면, 두 대의 컴퓨터가 필요하다는 안내를 보여준다.
+    $('#override-condition').change(function () {
+        $('#human-condition-note').toggle($(this).val() === 'human');
+    });
 });
 
 // 접속 직후 바로 게임이 시작되지 않도록, "시작하기" 버튼을 눌러야
@@ -260,13 +273,32 @@ $(function() {
 
         let params = JSON.parse(JSON.stringify(config.experimentParams));
 
-        // 연구자용 Player 1/2/Layout 오버라이드 (기본값 그대로 두면 config.json과 동일)
-        params.playerZero = $('#override-playerZero').val();
-        params.playerOne = $('#override-playerOne').val();
+        // 연구자용 난이도(Layout) 오버라이드 — 기본값이면 config.json의
+        // 5단계 순서(experimentParams.layouts) 그대로 둔다.
         let layoutOverride = $('#override-layout').val();
         if (layoutOverride !== '__default__') {
             params.layouts = [layoutOverride];
         }
+        let firstLayout = params.layouts[0];
+
+        // "학습 조건"은 본 실험의 독립변인(학습 단계 파트너 유형)과 1:1로
+        // 대응한다. AI 조건을 고르면 1라운드째 난이도에 맞는 실험 봇을
+        // 자동으로 매칭한다 — 사람이 봇 이름을 직접 고르다 엉뚱한 봇(혹은
+        // 공개 데모 샘플 에이전트)을 고르는 실수를 원천 차단한다.
+        let condition = $('#override-condition').val();
+        if (condition === 'ai') {
+            params.playerZero = 'human';
+            params.playerOne = LAYOUT_TO_BOT[firstLayout] || config.experimentParams.playerOne;
+        } else if (condition === 'human') {
+            // 사람-사람 조건: 두 번째 참가자는 자신의 컴퓨터에서 이 화면에
+            // 접속해 "시작하기"만 누르면 된다 (서버가 대기 중인 게임에
+            // 자동으로 합류시킨다 — on_join의 get_waiting_game()). 이때
+            // 두 번째 참가자가 고른 조건/난이도는 서버에서 무시되고, 먼저
+            // "시작하기"를 누른 사람의 설정이 게임 전체에 적용된다.
+            params.playerZero = 'human';
+            params.playerOne = 'human';
+        }
+        // condition === 'default' 이면 config.json 값을 그대로 둔다.
 
         let data = {
             "params" : params,
