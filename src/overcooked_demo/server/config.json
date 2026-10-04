@@ -9,7 +9,7 @@
     "predefined" : {
         "experimentParams" : {
             "layouts" : ["cramped_room", "asymmetric_advantages", "coordination_ring", "forced_coordination", "counter_circuit"],
-            "gameTime" : 150,
+            "gameTime" : 60,
             "playerZero" : "human",
             "playerOne" : "RuleBasedBot_CrampedRoom",
             "randomized" : false,

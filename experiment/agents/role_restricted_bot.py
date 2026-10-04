@@ -66,6 +66,61 @@ class RoleRestrictedBot(GreedyHumanModel):
     def __init__(self, mlam, excluded_roles=None, **kwargs):
         super().__init__(mlam, **kwargs)
         self.excluded_roles = set(excluded_roles or [])
+        self._bot_tick_counter = 0
+
+    def action(self, state):
+        """
+        속도 조절(2026-10-05, "AI 봇이 너무 너무 빨라. 유저의 템포를 올리기
+        보단 봇의 템포(속도)를 지금의 1/2정도로" 피드백): 서버 틱 속도(=
+        사람의 반응성, app.py의 GAME_TICK_FPS)는 그대로 두고 봇의 "실제
+        행동 빈도"만 BOT_SPEED_DIVISOR분의 1로 줄인다.
+
+        왜 game.py의 ticks_per_ai_action(이미 있는, 딱 이 용도로 보이는
+        생성자 파라미터)을 안 쓰는가: 적용하기 전에 game.py의
+        apply_actions()를 읽어보니, 그걸 1보다 크게 설정하면 실제로는 게임
+        전체가 멈춰버리는 버그가 있다 — NPC 쪽은 매 틱
+        `self.pending_actions[i].get(block=True)`로 무조건 블로킹하는데,
+        다음 행동을 계산하게 하는 state push는
+        `curr_tick % ticks_per_ai_action == 0`인 틱에서만 일어난다. 즉
+        "건너뛰는" 틱에는 새 행동이 큐에 들어올 길이 전혀 없어서 그 틱의
+        get()이 영원히 막히고, 사람 쪽까지 포함해 게임 전체가 멈춘다
+        (원본 데모 코드 자체에 있던 버그로 보임 — 트레이닝된 RL 정책처럼
+        매번 빠르게 응답하는 에이전트만 쓰는 전제라면 ticks_per_ai_action>1을
+        실제로 쓸 일이 없어서 지금까지 드러나지 않았을 뿐).
+
+        그래서 그 파라미터는 건드리지 않고, 여기서 매 틱 action()이 (큐를
+        막지 않고) 즉시 반환하게 하면서 "건너뛰는 틱"에는 그냥 STAY를
+        반환하는 방식을 쓴다 — 서버/큐 쪽에는 전혀 영향이 없고(매 틱 바로
+        응답하니 블로킹 없음) 봇만 체감상 느려진다.
+
+        self.prev_state를 건너뛰는 틱에 "안" 건드리는 이유(한 번 직접
+        갱신했다가 실제로 역효과를 내서 되돌린 결정 — 2026-10-05): 처음엔
+        건너뛰는 틱에도 prev_state를 매번 최신화했는데, 그렇게 하면 오히려
+        auto_unstuck이 "진짜" 턴마다 거의 매번 잘못 발동했다. 건너뛰는 틱은
+        항상 STAY라 위치가 안 바뀌고, 그 state를 prev_state로 저장해두면
+        바로 다음 "진짜" 턴에서 "직전 상태 대비 위치 변화 없음"으로 보여
+        (실제로는 그냥 한 틱 쉰 것뿐인데) 무작위 탈출 행동이 섞여 들어갔다
+        (test_bot_drops_undeliverable_soup_on_counter_instead_of_stalling가
+        이걸로 실패하면서 발견). auto_unstuck은 원래 "연속된 두 번의 '진짜'
+        행동 계산 사이에 위치가 안 바뀌었는가"를 보려는 것이므로, prev_state는
+        부모(GreedyHumanModel.action())가 실제로 호출될 때만(=이 메서드가
+        super().action()으로 내려갈 때만) 갱신되게 그대로 둬야 맞다 — 건너뛰는
+        틱에서는 prev_state를 아예 손대지 않는다.
+
+        PingReactiveBot("비켜줘" 처리 중)은 이 메서드를 거치지 않고 자체
+        action()에서 바로 move_action을 반환하는 경로가 있다 — 교착상태
+        회피 반응은 이 속도 제한과 무관하게 항상 즉시 나가야 하므로 의도된
+        동작이다(느려진 회피는 오히려 충돌/교착 위험을 키움).
+        """
+        self._bot_tick_counter += 1
+        if (
+            BOT_SPEED_DIVISOR > 1
+            and self._bot_tick_counter % BOT_SPEED_DIVISOR != 0
+        ):
+            return Action.STAY, {
+                "action_probs": self.a_probs_from_action(Action.STAY)
+            }
+        return super().action(state)
 
     def reset(self):
         """
@@ -254,6 +309,12 @@ _PING_RESPONSE_MAP = {
 # 반응이라 여기 안 넣고 PingReactiveBot에 별도 로직(_decide_move_aside_action)
 # 으로 분리했다 — 아래 "Phase 3b: 비켜줘(move) 핑" 섹션 참고.
 MOVE_PING_TYPE = "move"
+
+BOT_SPEED_DIVISOR = 2  # 1=평소 속도, 2=절반 속도, 3=1/3 속도...
+# "AI 봇이 너무 너무 빨라서 쌓인 수프를 사람이 못 따라간다, 유저의 템포를
+# 올리기보단 봇의 템포를 1/2로 낮추자"는 피드백(2026-10-05)으로 추가.
+# RoleRestrictedBot.action()의 속도 조절 로직 참고(바로 위 클래스 정의).
+# 2(=절반)보다 더 느리게 하고 싶으면 이 값만 올리면 된다(3, 4, ...).
 
 REACTION_DELAY_STEPS = 5  # 약 0.5~1초 상당(스텝 길이에 따라 조정) 지연 후 반응
 # 핑 유효 반응 창("핑을 보낸 뒤 몇 스텝 안에 반응해야 반응으로 인정하는가")은

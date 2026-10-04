@@ -417,10 +417,19 @@ def test_bot_drops_undeliverable_soup_on_counter_instead_of_stalling():
     # 실제 게임 루프처럼 여러 틱 굴려서, 봇이 정말로 내려놓는지(제자리에서
     # 계속 들고만 있지 않는지) 끝까지 시뮬레이션한다. 상대(플레이어 1)는
     # 가만히 둔다 — 이 테스트의 관심사가 아니므로.
+    #
+    # 틱 예산에 BOT_SPEED_DIVISOR를 곱하는 이유(2026-10-05 추가): 이제
+    # RoleRestrictedBot.action()이 틱의 절반(기본값)은 즉시 STAY를 반환하고
+    # "진짜" 행동 계산은 나머지 절반에서만 일어나므로, 같은 거리를 걷는 데
+    # 필요한 틱 수 자체가 그만큼 늘어난다. 이건 이 테스트가 검증하려는
+    # "결국 내려놓는가"와는 무관한, 속도 제한 기능의 당연한 부작용이라
+    # 틱 예산만 맞춰주고 나머지 로직은 그대로 둔다.
     from overcooked_ai_py.mdp.actions import Action
+    from experiment.agents.role_restricted_bot import BOT_SPEED_DIVISOR
 
+    max_ticks = 40 * BOT_SPEED_DIVISOR
     dropped = False
-    for _ in range(40):
+    for _ in range(max_ticks):
         action0, _ = bot.action(state)
         state, _ = mdp.get_state_transition(state, (action0, Action.STAY))
         if not state.players[0].has_object():
@@ -428,7 +437,7 @@ def test_bot_drops_undeliverable_soup_on_counter_instead_of_stalling():
             break
 
     assert dropped, (
-        "40틱이 지나도록 봇이 수프를 계속 들고만 있음 — "
+        f"{max_ticks}틱이 지나도록 봇이 수프를 계속 들고만 있음 — "
         "place_obj_on_counter_actions()로 내려놓는 fallback이 동작하지 않음"
     )
 
@@ -576,6 +585,71 @@ def test_enqueue_action_overwrites_stale_instead_of_blocking():
     print("  PASS (오래된 액션은 버려지고 최신 액션만 남음, 큐 길이 항상 최대 1)\n")
 
 
+def test_bot_speed_throttle_halves_action_frequency():
+    print("=== Test 18: 봇 속도 제한(BOT_SPEED_DIVISOR)이 '진짜' 행동 계산(=부모 "
+          "GreedyHumanModel.action() 호출) 빈도를 정확히 1/N로 줄이고, 매 틱 "
+          "블로킹 없이 즉시 반환하며, 건너뛰는 틱에는 prev_state를 건드리지 "
+          "않아 auto_unstuck이 오작동하지 않는지 확인 — 'AI 봇이 너무 빨라서 "
+          "유저가 못 쫓아간다. 유저 템포는 그대로 두고 봇 템포만 1/2로' "
+          "피드백으로 2026-10-05에 추가. game.py의 ticks_per_ai_action 대신 "
+          "이 방식을 쓴 이유는 role_restricted_bot.py의 RoleRestrictedBot.action() "
+          "docstring 참고(그 파라미터를 그대로 쓰면 게임 전체가 멈추는 버그가 "
+          "있음). prev_state를 건너뛰는 틱에도 직접 갱신하는 첫 구현은 오히려 "
+          "test_bot_drops_undeliverable_soup_on_counter_instead_of_stalling(Test "
+          "13)을 실패시켰다 — 그 회귀를 다시 일으키지 않는지도 이 테스트가 "
+          "간접적으로 지킨다(아래 prev_state 단계별 검증 참고) ===")
+    import experiment.agents.role_restricted_bot as rrb
+    from overcooked_ai_py.agents.agent import GreedyHumanModel
+    from overcooked_ai_py.mdp.actions import Action
+
+    bot = make_bot()
+    bot.set_agent_index(0)
+
+    real_action_calls = []
+    original_action = GreedyHumanModel.action
+
+    def counting_action(self, state):
+        real_action_calls.append(self._bot_tick_counter)
+        return original_action(self, state)
+
+    GreedyHumanModel.action = counting_action
+    try:
+        mdp = OvercookedGridworld.from_layout_name("cramped_room")
+        state = mdp.get_standard_start_state()
+
+        n_ticks = 20
+        for i in range(n_ticks):
+            is_skip_tick = (i + 1) % rrb.BOT_SPEED_DIVISOR != 0
+            prev_state_before = bot.prev_state
+            bot.action(state)
+            if is_skip_tick:
+                # 건너뛰는 틱: prev_state를 아예 손대지 않아야 한다(손대면
+                # 다음 '진짜' 턴에서 auto_unstuck이 오작동 — Test 13 회귀).
+                assert bot.prev_state is prev_state_before, (
+                    "건너뛰는 틱에 prev_state가 바뀌면 안 되는데 바뀜 "
+                    "(auto_unstuck 오작동 위험, Test 13 회귀 원인)"
+                )
+            else:
+                # '진짜' 턴: 부모 GreedyHumanModel.action()이 평소처럼
+                # prev_state를 이번 state로 갱신했어야 한다.
+                assert bot.prev_state is state, (
+                    "'진짜' 턴인데도 prev_state가 갱신되지 않음"
+                )
+    finally:
+        GreedyHumanModel.action = original_action
+
+    expected_real_calls = n_ticks // rrb.BOT_SPEED_DIVISOR
+    assert len(real_action_calls) == expected_real_calls, (
+        f"실제 행동 계산(super().action()) 호출 횟수가 {n_ticks}틱 중 "
+        f"{expected_real_calls}번이어야 하는데 {len(real_action_calls)}번 "
+        f"호출됨: {real_action_calls}"
+    )
+    print(f"  결과: {n_ticks}틱 중 실제 행동 계산 {len(real_action_calls)}번 "
+          f"(나머지 {n_ticks - len(real_action_calls)}번은 즉시 STAY로 건너뜀) "
+          f"— BOT_SPEED_DIVISOR={rrb.BOT_SPEED_DIVISOR}")
+    print("  PASS (봇 속도가 1/N로, 블로킹이나 prev_state 오작동 없이 줄어듦)\n")
+
+
 def test_end_to_end_logging_and_metrics():
     print("=== Test 7 (End-to-End): 핑 채널 -> trajectory 로깅 -> compute_metrics.py 연결 테스트 ===")
     bot = make_bot()
@@ -629,5 +703,6 @@ if __name__ == "__main__":
     test_move_ping_reroutes_around_blocker_in_open_area()
     test_move_ping_waits_then_forces_retreat_in_dead_end()
     test_enqueue_action_overwrites_stale_instead_of_blocking()
+    test_bot_speed_throttle_halves_action_frequency()
     test_end_to_end_logging_and_metrics()
     print("Phase 2 전체(핑 채널 + 봇 반응 + 로깅 + 지표 계산) 테스트 통과.")
