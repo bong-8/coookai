@@ -87,7 +87,39 @@
 
     <div id="overcooked-container" class="text-center" style="display:none;">
         <h4 id="game-title" style="display:none">Game in Progress</h4>
-        <h4 id="game-over" style="display:none">Game Over</h4>
+        <!-- 게임 오버 화면: 2026-10-05 추가. 원래는 "Game Over" 텍스트만 뜨고
+             거기서 할 수 있는 게 없어서 "Leave"를 누르면 /(원본 공개 데모의
+             기본 화면)로 튕겨나가버리는 게 유일한 탈출구였다("매칭 매칭 창
+             에서 Leave 누르면 엉뚱한 화면으로 간다"는 피드백의 원인 — 아래
+             predefined.js의 leave-btn 핸들러 수정 참고). 여기에 (1) 방금 끝난
+             세션의 라운드별 기록을 볼 수 있는 버튼, (2) 실험 시작 화면으로
+             돌아가는 버튼을 추가했다. -->
+        <div id="game-over" style="display:none">
+            <h4>Game Over</h4>
+            <div style="margin: 14px 0;">
+                <button id="view-record-btn" class="btn btn-outline-primary">게임 기록 보기</button>
+                <button id="back-to-start-btn" class="btn btn-outline-secondary">처음 화면으로</button>
+            </div>
+            <!-- predefined.js의 renderGameRecord()가 채운다. 라운드(=레이아웃)가
+                 끝날 때마다(reset_game/end_game) 누적해 둔 기록을 여기 표로
+                 보여준다 — 클릭 전엔 숨겨둠. -->
+            <div id="game-record" style="display:none; max-width: 560px; margin: 0 auto; text-align: left;">
+                <table class="table table-sm table-bordered">
+                    <thead>
+                        <tr>
+                            <th>난이도</th>
+                            <th>최종 점수</th>
+                            <th>소요 시간</th>
+                            <th>도와줘</th>
+                            <th>비켜줘</th>
+                            <th>내가할게</th>
+                            <th>OK</th>
+                        </tr>
+                    </thead>
+                    <tbody id="game-record-body"></tbody>
+                </table>
+            </div>
+        </div>
         <div id="overcooked"></div>
         <!-- Phase 2: 핑 소통 채널 버튼. 클릭하면 기존 action 이벤트로
              PING_HELP/MOVE/MINE/OK 문자열을 그대로 보낸다 (서버는 이미 처리함).

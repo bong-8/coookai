@@ -22,7 +22,12 @@ window.lobbyTimeout = -1;
 $(function() {
     $('#leave-btn').click(function () {
         socket.emit("leave",{});
-        window.location.href = "/"
+        // 2026-10-05 수정: "/"(원본 공개 데모의 기본 화면, Player1/Player2
+        // 드롭다운이 있는 그 화면)로 보내던 걸 "/predefined"(이 실험 자체의
+        // 시작 화면)로 바꿨다. "매칭 대기 중 Leave를 누르면 엉뚱한 화면으로
+        // 간다"는 피드백의 원인이 이거였다 — 코드 버그라기보단 원본 공개
+        // 데모를 그대로 베낀 흔적이 실험용 페이지에 남아있던 것.
+        window.location.href = "/predefined"
     });
 });
 
@@ -96,6 +101,11 @@ socket.on('reset_game', function(data) {
     disable_ping_controls();
     $("#overcooked").empty();
     $("#reset-game").show();
+    // 라운드(=난이도 하나)가 끝날 때마다 호출된다. game.get_data()는 반환하면서
+    // 서버 쪽 trajectory를 비우므로, 이 라운드의 기록은 지금 이 data.data가
+    // 유일한 기회다 — 누적해두지 않으면 "게임 기록 보기"에서 마지막 라운드
+    // 말고는 볼 방법이 없다.
+    recordRoundResult(data.data);
     setTimeout(function() {
         $("#reset-game").hide();
         graphics_config = {
@@ -124,6 +134,9 @@ socket.on('end_game', function(data) {
     $('#game-title').hide();
     $('#game-over').show();
     $("#overcooked").empty();
+    // 마지막 라운드 기록도 reset_game과 똑같이 누적해둔다 — 세션 전체(5개
+    // 난이도) 기록이 "게임 기록 보기"에 전부 모이게.
+    recordRoundResult(data.data);
 
     // Game ended unexpectedly
     if (data.status === 'inactive') {
@@ -244,6 +257,87 @@ function disable_key_listener() {
     }
     PRESSED_MOVE_KEYS = [];
 };
+
+
+/* * * * * * * * * * * * * * * * * * * * *
+ * 게임 기록(라운드별 요약) — 2026-10-05  *
+ * * * * * * * * * * * * * * * * * * * * *
+ * "게임 끝나고 기록을 볼 수 있는 버튼" 요청으로 추가. 서버의
+ * game.get_data()는 반환과 동시에 그 라운드의 trajectory를 비우므로
+ * (game.py 참고), reset_game/end_game 이벤트가 올 때마다 그 즉시 요약만
+ * 뽑아서 클라이언트 쪽(window.GAME_RECORD)에 쌓아둔다 — 서버에 새 엔드포인트를
+ * 만들거나 전체 trajectory를 계속 들고 있을 필요 없이, 각 라운드 trajectory의
+ * 마지막 엔트리(최종 점수/소요시간)와 "pings" 필드(핑 타입별 집계)만 뽑아
+ * 가벼운 요약으로 변환한다. 전체 리플레이가 아니라 "이번 세션에 난이도별로
+ * 몇 점이었고 핑을 몇 번 주고받았는지"를 보여주는 용도. */
+window.GAME_RECORD = [];
+
+function recordRoundResult(data) {
+    if (!data || !data.trajectory || data.trajectory.length === 0) {
+        return;
+    }
+    var trajectory = data.trajectory;
+    var lastStep = trajectory[trajectory.length - 1];
+    var pingCounts = { help: 0, move: 0, mine: 0, ok: 0 };
+    trajectory.forEach(function (step) {
+        (step.pings || []).forEach(function (ping) {
+            if (pingCounts.hasOwnProperty(ping.ping_type)) {
+                pingCounts[ping.ping_type] += 1;
+            }
+        });
+    });
+    window.GAME_RECORD.push({
+        layout: lastStep.layout_name || "?",
+        score: lastStep.score,
+        timeElapsedSec: Math.round(lastStep.time_elapsed),
+        pingCounts: pingCounts
+    });
+}
+
+function renderGameRecord() {
+    var $body = $("#game-record-body");
+    $body.empty();
+    if (window.GAME_RECORD.length === 0) {
+        $body.append("<tr><td colspan='7'>기록된 라운드가 없습니다.</td></tr>");
+        return;
+    }
+    window.GAME_RECORD.forEach(function (round) {
+        var minutes = Math.floor(round.timeElapsedSec / 60);
+        var seconds = round.timeElapsedSec % 60;
+        var timeStr = minutes + "분 " + seconds + "초";
+        $body.append(
+            "<tr>" +
+            "<td>" + round.layout + "</td>" +
+            "<td>" + round.score + "</td>" +
+            "<td>" + timeStr + "</td>" +
+            "<td>" + round.pingCounts.help + "</td>" +
+            "<td>" + round.pingCounts.move + "</td>" +
+            "<td>" + round.pingCounts.mine + "</td>" +
+            "<td>" + round.pingCounts.ok + "</td>" +
+            "</tr>"
+        );
+    });
+}
+
+$(function () {
+    $('#view-record-btn').click(function () {
+        var $panel = $('#game-record');
+        if ($panel.is(':visible')) {
+            $panel.hide();
+            $(this).text('게임 기록 보기');
+        } else {
+            renderGameRecord();
+            $panel.show();
+            $(this).text('게임 기록 숨기기');
+        }
+    });
+    $('#back-to-start-btn').click(function () {
+        // leave-btn과 동일하게 /predefined(이 실험의 시작 화면)로 돌아간다.
+        // 이미 end_game까지 받은 뒤라 서버 쪽 게임은 정리된 상태이므로
+        // 별도로 leave를 emit할 필요는 없다.
+        window.location.href = "/predefined";
+    });
+});
 
 
 /* * * * * * * * * * * * * * * * * * * * *
