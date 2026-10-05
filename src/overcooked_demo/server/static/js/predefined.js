@@ -206,13 +206,13 @@ var MOVEMENT_SEND_INTERVAL_MS = 80;  // 서버 10fps(~100ms)보다 살짝 빠르
 // 핑을 마우스로 클릭하기 어렵다는 피드백(2026-10-04)으로 추가한 숫자키
 // 단축키 — 게임 중에는 양손이 방향키/스페이스에 가 있으니, 숫자키 1~4를
 // 키보드 맨 위 줄에 그대로 둬 손을 크게 옮기지 않고도 누를 수 있게 했다.
-// PING_TYPES 배열(아래)과 같은 순서: 1=help(도와줘), 2=move(비켜줘),
-// 3=mine(내가 할게), 4=ok. e.which: 1='1'=49, 2='2'=50, 3='3'=51, 4='4'=52.
+// PING_TYPES 배열(아래)과 같은 순서: 1=thanks(고마워), 2=move(비켜줘),
+// 3=sorry(미안해), 4=ok. (2026-10-05: 1,3번이 도와줘/내가 할게 → 고마워/미안해). e.which: 1='1'=49, 2='2'=50, 3='3'=51, 4='4'=52.
 // move(비켜줘)는 2026-10-04에 "look"(이거 봐) 자리를 교체했다 — look은
 // 행동 변화가 전혀 없어서 "핑을 눌러도 아무 효과가 없다"는 피드백의
 // 원인이었다. 자세한 반응 로직은 experiment/agents/role_restricted_bot.py의
 // PingReactiveBot._decide_move_aside_action 참고.
-var PING_KEY_TO_TYPE = { 49: 'help', 50: 'move', 51: 'mine', 52: 'ok' };
+var PING_KEY_TO_TYPE = { 49: 'thanks', 50: 'move', 51: 'sorry', 52: 'ok' };
 
 // (2026-10-05) 입력 방식 변경 — "방향키 반응이 늦어 다시 누르면 2칸 이동" 문제.
 // 예전: 누르는 동안 80ms마다 방향 문자열 반복 전송(첫 입력이 타이머를 기다리고,
@@ -300,7 +300,7 @@ function recordRoundResult(data) {
     }
     var trajectory = data.trajectory;
     var lastStep = trajectory[trajectory.length - 1];
-    var pingCounts = { help: 0, move: 0, mine: 0, ok: 0 };
+    var pingCounts = { help: 0, move: 0, mine: 0, ok: 0, thanks: 0, sorry: 0 };
     trajectory.forEach(function (step) {
         (step.pings || []).forEach(function (ping) {
             if (pingCounts.hasOwnProperty(ping.ping_type)) {
@@ -332,9 +332,9 @@ function renderGameRecord() {
             "<td>" + round.layout + "</td>" +
             "<td>" + round.score + "</td>" +
             "<td>" + timeStr + "</td>" +
-            "<td>" + round.pingCounts.help + "</td>" +
+            "<td>" + round.pingCounts.thanks + "</td>" +
             "<td>" + round.pingCounts.move + "</td>" +
-            "<td>" + round.pingCounts.mine + "</td>" +
+            "<td>" + round.pingCounts.sorry + "</td>" +
             "<td>" + round.pingCounts.ok + "</td>" +
             "</tr>"
         );
@@ -368,7 +368,7 @@ $(function () {
  * 이벤트로 PING_<TYPE> 문자열을 보낸다. *
  * * * * * * * * * * * * * * * * * * * * */
 
-var PING_TYPES = ['help', 'move', 'mine', 'ok'];
+var PING_TYPES = ['thanks', 'move', 'sorry', 'ok'];
 
 // 버튼 클릭과 숫자키(1/2/3/4) 단축키가 똑같은 경로를 타도록 공용 함수로 뺐다.
 function send_ping(pingType) {

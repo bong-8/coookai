@@ -609,6 +609,9 @@ class RoleRestrictedBot(GreedyHumanModel):
 
 
 # ── Phase 3: 핑 반응 ────────────────────────────────────────────────
+# 사회적 핑(2026-10-05: 1,3번 도와줘/내가 할게 → 고마워/미안해)에 대한 봇의 답 말풍선.
+SOCIAL_REPLY = {"thanks": "welcome", "sorry": "fine"}
+
 # ping_type별 반응 규칙. "ALL"은 excluded_roles를 일시적으로 전부 해제(=봇이
 # 평소엔 피하던 일(배달 등)까지 포함해 그 순간 가장 효율적인 행동을 함),
 # 역할 이름(예: "deliver")은 그 역할을 일시적으로 상대에게 "양보"(제외 목록에
@@ -866,6 +869,8 @@ class PingReactiveBot(RoleRestrictedBot):
     def _activate_ping(self, entry):
         ping_type = entry["ping_type"]
         self._ack_pending = True
+        # 사회적 핑에는 말풍선 종류를 달리해 답한다(고마워→천만에, 미안해→괜찮아).
+        self.last_ack_kind = SOCIAL_REPLY.get(ping_type, "ok")
         if ping_type == MOVE_PING_TYPE:
             self._move_ping_active_until_step = (
                 self._curr_step + REACTION_DELAY_STEPS * 4

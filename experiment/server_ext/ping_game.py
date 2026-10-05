@@ -47,7 +47,11 @@ import time
 from queue import Empty
 
 PING_PREFIX = "PING_"
-VALID_PING_TYPES = {"help", "move", "mine", "ok"}
+# help/mine은 예전 버튼(1,3번)이었고 지금 화면에서는 안 보내지만, 옛 로그/테스트와의
+# 호환을 위해 서버는 계속 유효 처리한다. thanks/sorry는 사회적 핑(2026-10-05),
+# welcome/fine은 봇이 되돌려 주는 답 말풍선 전용(클라이언트가 보내지는 않음).
+VALID_PING_TYPES = {"help", "move", "mine", "ok", "thanks", "sorry"}
+BOT_REPLY_BUBBLES = {"ok", "welcome", "fine"}
 
 # state_pong은 play_game 루프에서 초당 몇 프레임(fps, 기본 6)마다 브로드캐스트된다.
 # 12틱 ≈ 2초(6fps 기준) 동안 말풍선을 화면에 유지한다.
@@ -187,7 +191,8 @@ class PingMixin:
             if hasattr(policy, "note_step"):
                 policy.note_step()
             if hasattr(policy, "pop_ack") and policy.pop_ack():
-                self._show_ping_on_screen(bot_player_id, "ok")
+                self._show_ping_on_screen(
+                    bot_player_id, getattr(policy, "last_ack_kind", "ok"))
         return super(PingMixin, self).tick()
 
     def activate(self):

@@ -1,145 +1,115 @@
-![MDP python tests](https://github.com/HumanCompatibleAI/overcooked_ai/workflows/.github/workflows/pythontests.yml/badge.svg) ![overcooked-ai codecov](https://codecov.io/gh/HumanCompatibleAI/overcooked_ai/branch/master/graph/badge.svg) [![PyPI version](https://badge.fury.io/py/overcooked-ai.svg)](https://badge.fury.io/py/overcooked-ai) [!["Open Issues"](https://img.shields.io/github/issues-raw/HumanCompatibleAI/overcooked_ai.svg)](https://github.com/HumanCompatibleAI/minerl/overcooked_ai) [![GitHub issues by-label](https://img.shields.io/github/issues-raw/HumanCompatibleAI/overcooked_ai/bug.svg?color=red)](https://github.com/HumanCompatibleAI/overcooked_ai/issues?utf8=%E2%9C%93&q=is%3Aissue+is%3Aopen+label%3Abug) [![Downloads](https://pepy.tech/badge/overcooked-ai)](https://pepy.tech/project/overcooked-ai)
-[![arXiv](https://img.shields.io/badge/arXiv-1910.05789-bbbbbb.svg)](https://arxiv.org/abs/1910.05789)
+# Overcooked-AI 협업 학습 실험 플랫폼
 
-# Overcooked-AI 🧑‍🍳🤖
+> **AI 봇과의 협업 학습이 사람 간 협업 소통으로의 전이 및 학습 스트레스에 미치는 영향**을 보기 위한 실험용 Overcooked-AI 웹 플랫폼입니다.
+> 개발 중 (파일럿 전 단계)
 
-<p align="center">
-  <!-- <img src="overcooked_ai_js/images/screenshot.png" width="350"> -->
-  <img src="./images/layouts.gif" width="100%"> 
-  <i>5 of the available layouts. New layouts are easy to hardcode or generate programmatically.</i>
-</p>
+이 저장소는 [HumanCompatibleAI/overcooked_ai](https://github.com/HumanCompatibleAI/overcooked_ai)(MIT)를 기반으로 합니다.
+원본 README는 [`README.upstream.md`](README.upstream.md), 개발 이력 상세는 [`experiment/README.md`](experiment/README.md)에 있습니다.
 
-## Introduction 🥘
+---
 
-Overcooked-AI is a benchmark environment for fully cooperative human-AI task performance, based on the wildly popular video game [Overcooked](http://www.ghosttowngames.com/overcooked/).
+## 1. 연구 개요
 
-The goal of the game is to deliver soups as fast as possible. Each soup requires placing up to 3 ingredients in a pot, waiting for the soup to cook, and then having an agent pick up the soup and delivering it. The agents should split up tasks on the fly and coordinate effectively in order to achieve high reward.
+| 구분 | 내용 |
+|---|---|
+| 독립변인 | 학습 단계 파트너 유형: **AI 봇 vs 사람** |
+| RQ1 | AI 봇과 연습한 사용자가 학습 스트레스(NASA-TLX)가 더 낮은가? |
+| RQ2 | 이후 제3자와의 협업 성과(점수·완료 시간)가 달라지는가? |
+| RQ3 | 인간 간 협업의 질(협응·소통·공유 정신 모델)이 달라지는가? |
+| 로그로 측정 | 점수, 유휴·기능적 지연(협응), 핑-행동 일치·소통 효율(소통) |
+| 설문으로 측정 | NASA-TLX, 공유 정신 모델(SMM) — 로그 아님 |
 
-You can **try out the game [here](https://humancompatibleai.github.io/overcooked-demo/)** (playing with some previously trained DRL agents). To play with your own trained agents using this interface, or to collect more human-AI or human-human data, you can use the code [here](https://github.com/HumanCompatibleAI/overcooked_ai/tree/master/src/overcooked_demo). You can find some human-human and human-AI gameplay data already collected [here](https://github.com/HumanCompatibleAI/overcooked_ai/tree/master/src/human_aware_rl/static/human_data).
+## 2. 실험 플랫폼이 하는 일
 
-**NOTE + LOOKING FOR CONTRIBUTORS:** DRL and BC implementations are now deprecated. We used to include code for training BC and PPO agents in the `human_aware_rl` directory. See [this issue](https://github.com/HumanCompatibleAI/overcooked_ai/issues/162) for more details.
+- **5단계 난이도**를 순서대로 진행 (각 60초): `cramped_room_mixed → asymmetric_advantages_mixed → coordination_ring_mixed → forced_coordination_mixed → counter_circuit`
+- **주문 목록**: 시작 시 1개, **8초마다 1개** 추가(기한 없음). 목록의 메뉴와 **재료 구성이 정확히 같은** 수프를 서빙하면 점수(대부분 20점)를 얻고 그 주문이 사라짐. 목록에 없는 수프는 0점. 메뉴는 양파/토마토 조합 4종이 고르게, 난이도별로 모든 참가자에게 같은 순서로 나옴.
+- **AI 봇**(규칙 기반, 예측 가능한 파트너): 가장 먼저 들어온 미처리 주문부터 만들고, 사람보다 느리게(행동 빈도 1/3) 움직임. 서빙도 함께 함. 두 플레이어가 서로 다른 구역에서 일하는 `forced_coordination`에서는 재료·접시를 가운데 카운터에 공급하는 "공급자" 역할.
+- **소통 핑**(숫자키 1~4 또는 버튼): `1 고마워` · `2 비켜줘` · `3 미안해` · `4 OK`. 봇은 비켜줘에는 잠깐 생각한 뒤(≈0.8초) OK 말풍선과 함께 비켜주고, 고마워/미안해에는 "천만에"/"괜찮아"로 답함.
+- **조작**: 방향키 이동, 스페이스바 상호작용(줍기/놓기/요리 시작/서빙). 키 눌림·뗌을 이벤트로 처리해 한 번 누르면 정확히 1칸.
+- **로그**: 닉네임(필수 입력)과 함께 라운드별로 저장.
 
-This benchmark was build in the context of a 2019 paper: *[On the Utility of Learning about Humans for Human-AI Coordination](https://arxiv.org/abs/1910.05789)*. Also see our [blog post](https://bair.berkeley.edu/blog/2019/10/21/coordination/).
+## 3. 실행 방법 (Windows)
 
-## Research Papers using Overcooked-AI 📑
+```bat
+git clone <이 저장소>
+cd overcooked_ai
+python -m venv .venv
+.venv\Scripts\activate
+pip install -e .
+pip install -r src\overcooked_demo\server\requirements.txt   (서버 의존성; 이미 동작하는 .venv가 있으면 생략)
 
-
-- Carroll, Micah, Rohin Shah, Mark K. Ho, Thomas L. Griffiths, Sanjit A. Seshia, Pieter Abbeel, and Anca Dragan. ["On the utility of learning about humans for human-ai coordination."](https://arxiv.org/abs/1910.05789) NeurIPS 2019.
-- Charakorn, Rujikorn, Poramate Manoonpong, and Nat Dilokthanakul. [“Investigating Partner Diversification Methods in Cooperative Multi-Agent Deep Reinforcement Learning.”](https://www.rujikorn.com/files/papers/diversity_ICONIP2020.pdf) Neural Information Processing. ICONIP 2020.
-- Knott, Paul, Micah Carroll, Sam Devlin, Kamil Ciosek, Katja Hofmann, Anca D. Dragan, and Rohin Shah. ["Evaluating the Robustness of Collaborative Agents."](https://arxiv.org/abs/2101.05507) AAMAS 2021.
-- Nalepka, Patrick, Jordan P. Gregory-Dunsmore, James Simpson, Gaurav Patil, and Michael J. Richardson. ["Interaction Flexibility in Artificial Agents Teaming with Humans."](https://www.researchgate.net/publication/351533529_Interaction_Flexibility_in_Artificial_Agents_Teaming_with_Humans) Cogsci 2021.
-- Fontaine, Matthew C., Ya-Chuan Hsu, Yulun Zhang, Bryon Tjanaka, and Stefanos Nikolaidis. [“On the Importance of Environments in Human-Robot Coordination”](http://arxiv.org/abs/2106.10853) RSS 2021.
-- Zhao, Rui, Jinming Song, Hu Haifeng, Yang Gao, Yi Wu, Zhongqian Sun, Yang Wei. ["Maximum Entropy Population Based Training for Zero-Shot Human-AI Coordination"](https://arxiv.org/abs/2112.11701). NeurIPS Cooperative AI Workshop, 2021.
-- Sarkar, Bidipta, Aditi Talati, Andy Shih, and Dorsa Sadigh. [“PantheonRL: A MARL Library for Dynamic Training Interactions”](https://iliad.stanford.edu/pdfs/publications/sarkar2022pantheonrl.pdf). AAAI 2022.
-- Ribeiro, João G., Cassandro Martinho, Alberto Sardinha, Francisco S. Melo. ["Assisting Unknown Teammates in Unknown Tasks: Ad Hoc Teamwork under Partial Observability"](https://arxiv.org/abs/2201.03538).
-- Xihuai Wang, Shao Zhang, Wenhao Zhang, Wentao Dong, Jingxiao Chen, Ying Wen and Weinan Zhang. NeurIPS 2024. [“ZSC-Eval: An Evaluation Toolkit and Benchmark for Multi-agent Zero-shot Coordination”](https://arxiv.org/abs/2310.05208v2).
-
-
-## Installation ☑️
-
-### Installing from PyPI 🗜
-
-You can install the pre-compiled wheel file using pip.
-```
-pip install overcooked-ai
-```
-Note that PyPI releases are stable but infrequent. For the most up-to-date development features, build from source. We recommend using [uv](https://docs.astral.sh/uv/getting-started/installation/) to install the package, so that you can use the provided lockfile to ensure no minimal package version issues.
-
-
-### Building from source 🔧
-
-Clone the repo 
-```
-git clone https://github.com/HumanCompatibleAI/overcooked_ai.git
+cd src\overcooked_demo\server
+set PORT=5001
+set HOST=127.0.0.1
+set FLASK_ENV=production
+:: (선택) 로그 저장 폴더 지정. 기본값은 <저장소>\data\game_logs. OneDrive 밖을 권장
+set OVERCOOKED_DATA_DIR=D:\logs
+python app.py
 ```
 
-Using uv (recommended):
+브라우저에서 `http://127.0.0.1:5001/predefined` 접속 → 닉네임 입력 → 시작.
+`set` 값은 그 cmd 창에서만 유지됩니다. 서버를 수정/재시작한 뒤에는 브라우저에서 **Ctrl+F5**로 새로고침하세요.
+연구자용 설정(시작 화면): 학습 조건(AI 봇/사람), 시작 난이도(1개만 테스트) 선택 가능.
+
+> 인간-인간 조건은 두 참가자가 각자 컴퓨터에서 같은 서버에 접속해 "시작하기"를 누르면 자동으로 한 게임에 연결됩니다.
+
+## 4. 원본과의 관계 — "diff = 실험 개입"
+
+원본 `game.py`, `overcooked_mdp.py`는 **수정하지 않고**, 실험에 필요한 동작은 모두 `experiment/`의 믹스인/서브클래스로 구현했습니다. 원본 서버 코드의 변경은 `app.py`(클래스 교체·닉네임 전달·난이도 순서)와 `predefined.*`(시작 화면·입력·핑 UI), `instructions.html`, `config.json`, 새 레이아웃 파일뿐입니다.
+
 ```
-uv venv
-uv sync
+experiment/
+  agents/role_restricted_bot.py   봇(역할 제한·핑 반응·혼합 주문·공급자)
+  server_ext/
+    ping_game.py                  게임 클래스 조립 + 핑 채널
+    order_queue.py                주문 큐(8초 간격·추첨)
+    human_input.py                키 눌림/뗌 입력 처리
+    data_log.py                   닉네임·로그 저장(재시도·중도 종료)
+    pickle_agent.py               봇을 서버용 agent.pickle로 저장
+    test_ping_logic.py            단위/통합 테스트
+  analysis/
+    round_events.py               로그에서 사건 복원 + 지표 계산
+    analyze_session.py            세션 지표표(CSV)
+    summarize_log.py              한 라운드 요약
+    compute_metrics.py            참가자 단위 CSV
+    simulate_pair.py / simulate_orders.py   봇 점검용 시뮬레이션
+src/overcooked_ai_py/data/layouts/*_mixed.layout   토마토를 추가한 실험 레이아웃
 ```
 
+## 5. 주요 파라미터 (코드 상수)
 
-### Verifying Installation 📈
+| 항목 | 값 | 위치 |
+|---|---|---|
+| 라운드 시간 / 서버 틱 | 60초 / 10fps | `config.json` (`gameTime`, `MAX_FPS`) |
+| 주문 간격 / 시작 주문 수 | 8초 / 1개 | `order_queue.py` |
+| 봇 속도 | 사람의 1/3 (`BOT_SPEED_DIVISOR=3`) | `role_restricted_bot.py` |
+| 봇 서빙 허용 | `BOT_MAY_DELIVER=True` | `role_restricted_bot.py` |
+| 핑 이해 지연 / 효과 시간 | 0.8초 / 약 10초 | `PING_ACK_DELAY_STEPS`, `PING_EFFECT_STEPS` |
 
-When building from source, you can verify the installation by running the Overcooked unit test suite. The following commands should all be run from the `overcooked_ai` project root directory:
+로그의 `meta`에 실험 당시 값(봇 속도, 주문 간격 등)이 같이 기록됩니다.
 
+## 6. 로그와 분석
+
+- 저장: `<로그폴더>/<시작시각>_<HH|HA>_<닉네임>/round<N>_<레이아웃>.pkl` + `index.csv` (라운드마다 한 줄)
+- 분석: `python experiment\analysis\analyze_session.py <로그폴더> --csv out.csv`
+- 지표: 점수·배달 수·0점 배달·주문 대기시간 / 유휴·막힌 이동·기능적 지연(수프 완성→수습)·인계 지연 / 핑 종류별 수·소통 효율·비켜줘 일치율
+- 해석 주의: 봇의 STAY 비율은 속도 제한 때문에 원래 높음(`waiting_ratio` 사용), `counter_circuit` 점수는 원본 체계라 다른 판과 규모가 다름(배달 수로 비교).
+- **개인정보**: 로그에는 참가자 닉네임이 들어 있어 `.gitignore`로 git에서 제외했습니다(`data/game_logs/`). 저장소에 올리지 마세요.
+
+## 7. 테스트
+
+```bat
+set PYTHONPATH=.;src
+python experiment\server_ext\test_ping_logic.py
+python experiment\smoke_test.py
 ```
-python testing/overcooked_test.py
-```
 
+## 8. 현재 상태 / 남은 일
 
+- 구현됨: 봇·핑·주문 큐·닉네임/로그·입력 개선·혼합 주문 레이아웃·분석 도구
+- 파일럿 전 점검: 난이도 균형(8초 간격), 봇 정지/막힘 구간, 핑 구성, 인간-인간 조건 로그
+- 개발 이력: [`experiment/README.md`](experiment/README.md)
 
+## 라이선스 / 출처
 
-If you're thinking of using the planning code extensively, you should run the full testing suite that verifies all of the Overcooked accessory tools (this can take 5-10 mins): 
-```
-python -m unittest discover -s testing/ -p "*_test.py"
-```
-
-See this [notebook](Overcooked%20Tutorial.ipynb) for a quick guide on getting started using the environment.
-
-## Code Structure Overview 🗺
-
-`overcooked_ai_py` contains:
-
-`mdp/`:
-- `overcooked_mdp.py`: main Overcooked game logic
-- `overcooked_env.py`: environment classes built on top of the Overcooked mdp
-- `layout_generator.py`: functions to generate random layouts programmatically
-
-`agents/`:
-- `agent.py`: location of agent classes
-- `benchmarking.py`: sample trajectories of agents (both trained and planners) and load various models
-
-`planning/`:
-- `planners.py`: near-optimal agent planning logic
-- `search.py`: A* search and shortest path logic
-
-`overcooked_demo` contains:
-
-`server/`:
-- `app.py`: The Flask app 
-- `game.py`: The main logic of the game. State transitions are handled by overcooked.Gridworld object embedded in the game environment
-- `move_agents.py`: A script that simplifies copying checkpoints to [agents](src/overcooked_demo/server/static/assets/agents/) directory. Instruction of how to use can be found inside the file or by running `python move_agents.py -h`
-
-`up.sh`: Shell script to spin up the Docker server that hosts the game 
-
-`human_aware_rl` contains (NOTE: this is not supported anymore, see bottom of the README for more info):
-
-`ppo/`:
-- `ppo_rllib.py`: Primary module where code for training a PPO agent resides. This includes an rllib compatible wrapper on `OvercookedEnv`, utilities for converting rllib `Policy` classes to Overcooked `Agent`s, as well as utility functions and callbacks
-- `ppo_rllib_client.py` Driver code for configuing and launching the training of an agent. More details about usage below
-- `ppo_rllib_from_params_client.py`: train one agent with PPO in Overcooked with variable-MDPs 
-- `ppo_rllib_test.py` Reproducibility tests for local sanity checks
-- `run_experiments.sh` Script for training agents on 5 classical layouts
-- `trained_example/` Pretrained model for testing purposes
-
-`rllib/`:
-- `rllib.py`: rllib agent and training utils that utilize Overcooked APIs
-- `utils.py`: utils for the above
-- `tests.py`: preliminary tests for the above
-
-`imitation/`:
-- `behavior_cloning_tf2.py`:  Module for training, saving, and loading a BC model
-- `behavior_cloning_tf2_test.py`: Contains basic reproducibility tests as well as unit tests for the various components of the bc module.
-
-`human/`:
-- `process_data.py` script to process human data in specific formats to be used by DRL algorithms
-- `data_processing_utils.py` utils for the above
-
-`utils.py`: utils for the repo
-
-
-## Raw Data :ledger:
-
-The raw data used during BC training is >100 MB, which makes it inconvenient to distribute via git. The code uses pickled dataframes for training and testing, but in case one needs to original data it can be found [here](https://drive.google.com/drive/folders/1aGV8eqWeOG5BMFdUcVoP2NHU_GFPqi57?usp=share_link) 
-
-## Deprecated: Behavior Cloning and Reinforcement Learning 
-
-
-
-
-
-## Further Issues and questions ❓
-
-If you have issues or questions, you can contact [Micah Carroll](https://micahcarroll.github.io) at mdc@berkeley.edu.
+MIT (원본 [LICENSE](LICENSE) 유지). 환경: Carroll et al. (2019), *On the Utility of Learning about Humans for Human-AI Coordination*, NeurIPS.

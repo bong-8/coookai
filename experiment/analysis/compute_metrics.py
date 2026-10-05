@@ -93,6 +93,17 @@ def compute_all_metrics(pickle_path: str, participant_id: str, condition: str) -
     row.update(compute_score_metric(trajectory))
     row.update(compute_process_metrics(trajectory))
     row.update(compute_communication_metrics(trajectory))
+    # 실제 게임 로그(layout/order_events 포함)면 round_events의 상세 지표로 TODO 자리를
+    # 채운다(기능적 지연, 핑-행동 일치 등). 가짜/구형 로그는 기존 값 그대로.
+    try:
+        from experiment.analysis.round_events import analyze_round
+        detail, _ = analyze_round(trajectory)
+        row["functional_delay_mean"] = detail["soup_ready_to_pickup_delay_s"]
+        row["ping_action_match_rate"] = detail["ping_action_match_rate"]
+        for k, v in detail.items():
+            row.setdefault(k, v)
+    except Exception:
+        pass
     return row
 
 

@@ -36,7 +36,11 @@ var PING_LABELS = {
     help: '🙋 도와줘',
     move: '🙅 비켜줘',
     mine: '🙋‍♂️ 내가 할게',
-    ok: '👍 OK'
+    ok: '👍 OK',
+    thanks: '🙏 고마워',
+    sorry: '🙇 미안해',
+    welcome: '😊 천만에',
+    fine: '🙂 괜찮아'
 };
 
 var scene_config = {

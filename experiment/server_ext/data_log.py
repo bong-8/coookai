@@ -98,12 +98,24 @@ class DataLogMixin:
         if self._session_started is None:
             self._session_started = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    def reset(self):
+        # 라운드 전환(game.reset → deactivate → activate) 중에 호출되는 deactivate는
+        # "중도 이탈"이 아니다 — 이때 trajectory는 방금 끝난 라운드 기록이고 곧 play_game이
+        # get_data()로 가져가 화면(라운드 결과표)과 저장에 쓴다. 이를 구분하지 않으면
+        # (2026-10-05 실제 5판 로그에서 발견) 1~4라운드가 partial=True로 잘못 저장되고
+        # play_game의 get_data()는 빈 trajectory를 받아 화면 결과표가 비었다.
+        self._in_reset = True
+        try:
+            return super(DataLogMixin, self).reset()
+        finally:
+            self._in_reset = False
+
     def deactivate(self):
         # 참가자가 중간에 나가거나 탭을 닫으면(원본은 이때 get_data를 안 불러
         # 진행하던 라운드 기록이 통째로 사라졌다) 남아 있는 trajectory를 "중도
         # 종료(partial)" 표시로 저장한다. 정상 종료 때는 이미 get_data가
         # trajectory를 비운 뒤라 중복 저장되지 않는다.
-        if getattr(self, "trajectory", None):
+        if getattr(self, "trajectory", None) and not getattr(self, "_in_reset", False):
             self._partial_round = True
             try:
                 self.get_data()

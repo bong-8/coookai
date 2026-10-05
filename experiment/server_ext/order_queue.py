@@ -6,7 +6,7 @@
 새로 들어오지도 않음). 실험에서 쓰려는 방식은 이렇다:
 
   - 게임 시작 시 주문 INITIAL_ORDER_COUNT개가 목록에 있다.
-  - ORDER_ARRIVAL_INTERVAL_SEC(10초)마다 허용 레시피 중 하나가 목록에 추가된다.
+  - ORDER_ARRIVAL_INTERVAL_SEC(8초; 2026-10-05에 10→8)마다 허용 레시피 중 하나가 목록에 추가된다.
     만료는 없다(추가된 주문은 배달될 때까지 목록에 남는다).
   - 목록에 있는 레시피의 수프를 배달하면 점수를 받고 그 주문이 목록에서
     삭제된다. 목록에 없는 레시피를 배달하면 0점(수프는 사라짐 — 원본의
@@ -36,7 +36,7 @@
 import random
 import time
 
-ORDER_ARRIVAL_INTERVAL_SEC = 10
+ORDER_ARRIVAL_INTERVAL_SEC = 8
 INITIAL_ORDER_COUNT = 1
 
 

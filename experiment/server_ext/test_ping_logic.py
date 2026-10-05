@@ -784,15 +784,17 @@ def test_order_queue_add_deliver_reject():
     r, _ = deliver()
     assert r == 0, "목록이 비었을 때 배달하면 0점이어야 함(ALL_RECIPES 폴백 금지)"
 
-    # 10초마다 1개씩 추가(만료 없음): 25초 경과 -> 2개 추가
+    # ORDER_ARRIVAL_INTERVAL_SEC마다 1개씩 추가(만료 없음)
     g.start_time -= 25
     g.apply_actions()
-    assert len(g._open_orders) == 2, len(g._open_orders)
-    g.start_time -= 10  # 총 35초 경과 -> 3개째
+    n25 = int(25 // ORDER_ARRIVAL_INTERVAL_SEC)
+    assert len(g._open_orders) == n25, (len(g._open_orders), n25)
+    g.start_time -= 10  # 총 35초 경과
     g.apply_actions()
-    assert len(g._open_orders) == 3
+    n35 = int(35 // ORDER_ARRIVAL_INTERVAL_SEC)
+    assert len(g._open_orders) == n35, (len(g._open_orders), n35)
     last = g.trajectory[-1]
-    assert last["open_orders"] == [["onion"] * 3] * 3, last["open_orders"]
+    assert last["open_orders"] == [["onion"] * 3] * n35, last["open_orders"]
     kinds = [e["type"] for e in g.trajectory[-2]["order_events"]]
     assert "added" in kinds and "rejected" in kinds and "delivered" in kinds, kinds
 
@@ -800,7 +802,7 @@ def test_order_queue_add_deliver_reject():
     g.layouts.append("cramped_room")
     g.activate()
     assert len(g._open_orders) == 1 and g._next_order_at_sec == ORDER_ARRIVAL_INTERVAL_SEC
-    print("  PASS (시작 1개 -> 10초마다 +1, 배달 시 점수+삭제, 빈 목록이면 0점, "
+    print("  PASS (시작 1개 -> 간격마다 +1, 배달 시 점수+삭제, 빈 목록이면 0점, "
           "화면/로그 반영, 라운드 시작 시 초기화)\n")
 
 
@@ -1073,6 +1075,8 @@ def test_datalog_five_rounds_and_partial_on_leave():
             pass
         def deactivate(self):
             self.deactivated = True
+        def reset(self):  # 원본 Game.reset: deactivate → activate
+            self.deactivate(); self.activate()
     class _G(DataLogMixin, _Base):
         pass
 
@@ -1083,7 +1087,10 @@ def test_datalog_five_rounds_and_partial_on_leave():
         g = _G(); g._datalog_init(); g.activate(); g.set_nickname("sidA", "길동")
         for i, lay in enumerate(layouts[:4]):   # 4판 정상 종료(RESET 경로)
             g.trajectory = [{"layout_name": lay, "score": 20 * (i + 1)}] * 3
-            g.get_data()
+            g.reset()   # 라운드 전환: deactivate가 불려도 partial 저장이 일어나면 안 됨
+            assert len(g.trajectory) == 3, "reset 중 deactivate가 trajectory를 가져가면 안 됨"
+            d = g.get_data()   # play_game이 이어서 호출
+            assert len(d["trajectory"]) == 3 and d["meta"]["partial"] is False
         g.trajectory = [{"layout_name": layouts[4], "score": 7}] * 2   # 5번째 판 도중 이탈
         g.deactivate()
         assert g.deactivated and g.trajectory == []
@@ -1249,6 +1256,66 @@ def test_order_queue_variety_in_mixed_layouts():
 
 
 
+def test_social_pings_thanks_sorry():
+    """Test 30: 고마워/미안해는 유효 핑이고, 봇은 지연 뒤 각각 천만에/괜찮아 말풍선으로
+    답하며 행동(역할/목표)은 바꾸지 않는다."""
+    assert {"thanks", "sorry"} <= VALID_PING_TYPES
+    from experiment.agents.role_restricted_bot import PING_ACK_DELAY_STEPS
+    for ping, kind in (("thanks", "welcome"), ("sorry", "fine"), ("ok", "ok")):
+        game = TestGame(players=["p1", "bot_1"])
+        bot = make_bot(); bot.set_agent_index(1)
+        game.npc_policies = {"bot_1": bot}
+        bot.ping_queue = game.npc_policies["bot_1"].ping_queue
+        game.enqueue_action("p1", "PING_" + ping.upper())
+        shown = None
+        for _ in range(PING_ACK_DELAY_STEPS + 3):
+            game.tick()
+            info = game._visible_pings.get(1)
+            if info and shown is None:
+                shown = info["ping_type"]
+        assert shown == kind, (ping, shown)
+        assert bot._active_ping is None and bot._move_ping_active_until_step is None
+    print("PASS test_social_pings_thanks_sorry")
+
+
+
+def test_round_events_metrics_synthetic():
+    """Test 31: round_events — 기능적 지연(수프 완성→수습), 인계 지연, 핑-행동 일치, 0점 배달."""
+    import json
+    from experiment.analysis.round_events import analyze_round
+    grid = [["X", "P", "X"], ["X", " ", "S"], ["X", " ", "X"]]
+
+    def soup(ready):
+        return {"name": "soup", "position": [1, 0], "_ingredients": [], "is_ready": ready,
+                "is_cooking": not ready, "is_idle": False}
+
+    def st(p0, held0, p1, objs):
+        return json.dumps({"players": [
+            {"position": p0, "orientation": [0, -1], "held_object": {"name": held0} if held0 else None},
+            {"position": p1, "orientation": [0, -1], "held_object": None}], "objects": objs})
+
+    steps = [
+        (st([1, 1], "dish", [2, 1], [soup(True)]), [(0, 0), (0, 0)], 0),     # 이미 완성, 아직 안 가져감
+        (st([1, 1], "dish", [2, 1], [soup(True)]), ["interact", (0, 0)], 0),  # 수프 뜸(다음 스텝에 soup 보유)
+        (st([1, 1], "soup", [2, 1], []), [(0, 0), (0, 0)], 0),
+        (st([1, 1], "soup", [2, 1], []), [(0, 0), (0, 0)], 0),
+    ]
+    traj = []
+    for i, (state, ja, rew) in enumerate(steps):
+        traj.append({"state": state, "joint_action": json.dumps(ja), "reward": rew, "score": 0,
+                     "time_elapsed": i / 10, "cur_gameloop": i + 1, "layout": json.dumps(grid),
+                     "pings": [{"ping_type": "move", "sender_idx": 0}] if i == 0 else [],
+                     "order_events": []})
+    # 마지막 스텝은 결과 상태가 없어 이벤트 계산에서 제외되므로 상태 하나를 더 붙인다
+    traj.append(dict(traj[-1], state=st([1, 1], "soup", [3, 3], []), cur_gameloop=5, pings=[]))
+    row, ev = analyze_round(traj)
+    assert row["soup_delay_n"] == 1 and row["soup_ready_to_pickup_delay_s"] == 0.1, row
+    assert row["pickup_soup_p0"] == 1
+    assert row["move_ping_needed"] == 1  # 핑 시점에 상대가 인접(맨해튼 1)
+    print("PASS test_round_events_metrics_synthetic")
+
+
+
 if __name__ == "__main__":
     test_unknown_action_still_raises_keyerror()
     test_normal_move_unaffected()
@@ -1281,5 +1348,7 @@ if __name__ == "__main__":
     test_human_input_events_tap_hold_release()
     test_bot_handles_mixed_orders()
     test_order_queue_variety_in_mixed_layouts()
+    test_social_pings_thanks_sorry()
+    test_round_events_metrics_synthetic()
     test_end_to_end_logging_and_metrics()
     print("Phase 2 전체(핑 채널 + 봇 반응 + 로깅 + 지표 계산) 테스트 통과.")
