@@ -46,6 +46,8 @@ from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
 from experiment.agents.role_restricted_bot import (
     PingReactiveBot,
     MOVE_ASIDE_GRACE_TICKS,
+    PING_ACK_DELAY_STEPS,
+    PING_EFFECT_STEPS,
     _bfs_first_step_avoiding,
     _best_retreat_step,
 )
@@ -214,32 +216,33 @@ def test_ping_routes_to_real_reactive_bot():
     print("  PASS (봇의 ping_queue에 실제로 들어감)\n")
 
 
-def test_bot_shows_ok_ack_bubble_immediately_on_ping():
-    print("=== Test 5b: 사람이 핑을 보내면 '즉시'(지연 없이) 봇 머리 위에 OK 말풍선이 뜨는지 ===")
-    # "핑에 대해 반응이 전혀 없는 것 같다"는 피드백(2026-10-04)의 수정 검증.
-    # _show_ping_on_screen()이 보낸 사람(human_0, idx=0)뿐 아니라 봇
-    # (bot_1, idx=1)에도 동시에 뜨는지, 그리고 그게 REACTION_DELAY_STEPS를
-    # 기다리지 않고 "그 즉시" 뜨는지가 핵심이다 (실제 행동 반응은 지연되지만,
-    # "들었다"는 시각적 확인은 지연되면 안 됨).
+def test_bot_shows_ok_ack_only_after_understanding_delay():
+    print("=== Test 5b: 핑을 보내도 봇의 OK 말풍선은 '즉시' 뜨지 않고, 이해 지연"
+          "(PING_ACK_DELAY_STEPS) 뒤에야 뜨는지 (2026-10-05 피드백: OK부터 하고 "
+          "이해하는 느낌이라 순서를 바꿔달라) ===")
     bot = make_bot()
     game = TestGame(players=["human_0", "bot_1"], npc_policies={"bot_1": bot})
     assert game.get_state()["pings"] == {}
 
     game.enqueue_action("human_0", "PING_MINE")
     state = game.get_state()
-    assert state["pings"] == {"0": "mine", "1": "ok"}, state
-    print("  PASS (보낸 사람=idx0='mine' 그대로, 받는 봇=idx1='ok' 수신확인 동시 표시)\n")
+    assert state["pings"] == {"0": "mine"}, f"즉시에는 보낸 사람 말풍선만 있어야 함: {state}"
 
-    # 이 합성 ack는 실제 "사람이 보낸 핑"이 아니므로 trajectory 로깅(연구
-    # 지표용 pings 필드)에는 섞여 들어가면 안 된다 — _enqueue_ping()의 전체
-    # 파이프라인(= self._pending_pings.append)을 타지 않고 _show_ping_on_screen()
-    # 만 직접 호출했는지를 이 assert로 확인한다.
-    game.tick()
-    assert len(game.trajectory[-1]["pings"]) == 1, (
-        "합성 OK ack가 트라젝토리 로깅에 잘못 섞여 들어감: "
-        f"{game.trajectory[-1]['pings']}"
+    seen_ok_at = None
+    for i in range(1, PING_ACK_DELAY_STEPS + 3):
+        game.tick()
+        if game.get_state()["pings"].get("1") == "ok":
+            seen_ok_at = i
+            break
+    assert seen_ok_at == PING_ACK_DELAY_STEPS, (
+        f"OK가 {PING_ACK_DELAY_STEPS}틱째에 떠야 하는데 {seen_ok_at}틱째"
     )
-    assert game.trajectory[-1]["pings"][0]["player_id"] == "human_0"
+    print(f"  PASS (즉시는 보낸 사람만, 봇 OK는 {PING_ACK_DELAY_STEPS}틱 뒤)\n")
+
+    # 합성 OK는 연구 지표용 trajectory 'pings'에 섞이면 안 된다.
+    for t in game.trajectory:
+        for p in t.get("pings", []):
+            assert p["player_id"] == "human_0", p
     print("  PASS (합성 ack는 트라젝토리 로깅을 오염시키지 않음)\n")
 
 
@@ -347,44 +350,83 @@ def test_real_bot_update_for_layout_rebuilds_mlam_for_new_layout():
     print("  PASS (mlam이 coordination_ring 전용으로 교체됨, agent_index/excluded_roles 유지)\n")
 
 
-def test_help_ping_clears_all_exclusions():
-    print("=== Test 12: '도와줘' 핑을 받으면 excluded_roles가 일시적으로 전부 "
-          "해제되는지(실제 브라우저 플레이에서 '반응이 없다'는 피드백으로 단순화) ===")
-    bot = make_bot()  # excluded_roles=[] — 구분을 위해 직접 세팅
-    bot.excluded_roles = {"deliver"}
-    bot.set_agent_index(1)
-    bot.ping_queue.append({"ping_type": "help", "step": 0})
-    bot._curr_step = 0
-
-    calls = []
-
-    def fake_super_ml_action(state):
-        # 호출 시점의 excluded_roles 스냅샷을 기록 (실제 motion goal 계산은
-        # 이 테스트의 관심사가 아님 — RoleRestrictedBot.ml_action을 그대로
-        # 몽키패치해서 "무엇을 넘겨받는지"만 확인)
-        calls.append(set(bot.excluded_roles))
-        return ["dummy_goal"]
-
+def test_help_and_mine_pings_change_goal_choice_for_a_while():
+    print("=== Test 12: 도와줘=역할 제한 해제+나와 가까운 일, 내가 할게=서빙 제외+나와 "
+          "먼 일. 효과는 한 번이 아니라 PING_EFFECT_STEPS 동안 유지(속도 제한으로 "
+          "핑이 버려지던 버그 회귀 방지) ===")
     import experiment.agents.role_restricted_bot as rrb
-    original = rrb.RoleRestrictedBot.ml_action
-    rrb.RoleRestrictedBot.ml_action = lambda self, state: fake_super_ml_action(state)
-    try:
-        # 2026-10-04 "비켜줘" 추가 이후: 큐를 비우고 "즉시성" 핑(help/mine/ok)
-        # 을 꺼내는 일은 action()이 담당하도록 바뀌었다(move 핑과 채널을
-        # 분리하려고). ml_action()은 action()이 채워준 _pending_instant_entry
-        # 하나만 소비한다 — 그래서 ml_action()을 직접 테스트할 때도 그 계약을
-        # 그대로 따라 _drain_ping_queue()를 먼저 호출해줘야 한다.
-        bot._pending_instant_entry = bot._drain_ping_queue()
-        bot.ml_action("fake_state")
-    finally:
-        rrb.RoleRestrictedBot.ml_action = original
+    seen = []
+    orig = rrb.RoleRestrictedBot.action
 
-    assert calls == [set()], (
-        f"'help' 핑 처리 중에는 excluded_roles가 비어 있어야 하는데 {calls}"
-    )
-    # 핑 처리 끝난 뒤에는 원래 제외 목록(deliver)으로 복원돼야 함
-    assert bot.excluded_roles == {"deliver"}, bot.excluded_roles
-    print("  PASS (처리 중엔 제한 전부 해제, 끝나면 원래대로 복원)\n")
+    def spy(self, state):
+        seen.append((set(self.excluded_roles), getattr(self, "_goal_bias", None)))
+        return ("STAY", {})
+    rrb.RoleRestrictedBot.action = spy
+    try:
+        bot = make_bot()
+        bot.excluded_roles = {"deliver"}
+        bot.set_agent_index(0)
+        mdp = OvercookedGridworld.from_layout_name("cramped_room")
+        state = mdp.get_standard_start_state()
+        human_pos = state.players[1].position
+
+        # 핑 전: 평소 상태
+        bot.action(state)
+        assert seen[-1] == ({"deliver"}, None), seen[-1]
+
+        # help 핑 -> 지연 전에는 아무 변화 없음
+        bot.ping_queue.append({"ping_type": "help", "step": 0, "sender_idx": 1})
+        for _ in range(PING_ACK_DELAY_STEPS - 1):
+            bot.note_step()
+        bot.action(state)
+        assert seen[-1] == ({"deliver"}, None), "이해 지연 전인데 반응함"
+        bot.note_step()  # 지연 경과
+        assert bot.pop_ack() is True and bot.pop_ack() is False
+        # 효과는 여러 번의 결정에 걸쳐 유지
+        for _ in range(5):
+            bot.action(state)
+            assert seen[-1] == (set(), ("near", human_pos)), seen[-1]
+            bot.note_step()
+        assert bot.excluded_roles == {"deliver"}, "끝나면 원래 제한으로 복원돼야 함"
+
+        # mine 핑 -> 서빙 제외 + 먼 곳 우선
+        bot.ping_queue.append({"ping_type": "mine", "step": 0, "sender_idx": 1})
+        for _ in range(PING_ACK_DELAY_STEPS):
+            bot.note_step()
+        bot.action(state)
+        assert seen[-1] == ({"deliver"}, ("far", human_pos)), seen[-1]
+
+        # 효과 만료 후 원상복귀
+        for _ in range(PING_EFFECT_STEPS + 2):
+            bot.note_step()
+        bot.action(state)
+        assert seen[-1] == ({"deliver"}, None), seen[-1]
+    finally:
+        rrb.RoleRestrictedBot.action = orig
+    print("  PASS (지연 후 활성, 지속, 복원, 만료)\n")
+
+
+def test_goal_choice_by_distance_from_sender():
+    print("=== Test 12b: 도와줘면 보낸 사람에게 가까운 목표를, 내가 할게면 먼 목표를 고르는지 ===")
+    bot = make_bot()
+    mdp = OvercookedGridworld.from_layout_name("cramped_room")
+    bot.set_agent_index(0)
+    state = mdp.get_standard_start_state()
+    start = state.players_pos_and_or[0]
+    # 양파 보급대 두 곳(좌/우)을 목표 후보로
+    goals = bot.mlam.pickup_onion_actions({"onion": []}) if False else None
+    from collections import defaultdict
+    goals = bot.mlam.pickup_onion_actions(defaultdict(list))
+    assert len(goals) >= 2, goals
+    far_ref = max(goals, key=lambda g: g[0][0])[0]  # 어느 한 쪽 끝을 '보낸 사람 위치'로
+    bot._goal_bias = ("near", far_ref)
+    near_goal, _, _ = bot.choose_motion_goal(start, goals)
+    bot._goal_bias = ("far", far_ref)
+    far_goal, _, _ = bot.choose_motion_goal(start, goals)
+    d_near = abs(near_goal[0][0] - far_ref[0]) + abs(near_goal[0][1] - far_ref[1])
+    d_far = abs(far_goal[0][0] - far_ref[0]) + abs(far_goal[0][1] - far_ref[1])
+    assert d_near < d_far, (near_goal, far_goal)
+    print("  PASS (near는 가까운 쪽, far는 먼 쪽)\n")
 
 
 def test_bot_drops_undeliverable_soup_on_counter_instead_of_stalling():
@@ -496,7 +538,8 @@ def test_move_ping_reroutes_around_blocker_in_open_area():
     state.players[1].position = human_pos
 
     bot.ping_queue.append({"ping_type": "move", "step": 0, "sender_idx": 1})
-    bot._curr_step = 0
+    for _ in range(PING_ACK_DELAY_STEPS):  # 이해 지연 뒤에 반응이 시작된다
+        bot.note_step()
 
     action0, _ = bot.action(state)
     assert action0 != "interact", action0
@@ -902,6 +945,95 @@ def test_build_class_instantiates_with_all_mixins():
     print("PASS test_build_class_instantiates_with_all_mixins")
 
 
+def test_forced_layout_supplier_role_and_safety_net():
+    """Test 24: forced_coordination처럼 봇이 냄비/서빙대에 못 닿는 레이아웃에서
+    (a) 공급자 역할로 분석되고, (b) 접시와 양파를 번갈아 공유 카운터에 채워서
+    사람이 실제로 수프를 서빙할 수 있고, (c) 다른 레이아웃은 기존 역할 유지,
+    (d) 할 일이 없는 상황에서 어설션으로 죽지 않으며(NPC 스레드 사망=게임 정지 방지),
+    (e) 새 속성이 없는 옛 pickle도 핑 처리에서 안 죽는다."""
+    from experiment.agents.role_restricted_bot import (
+        PingReactiveBot, analyze_layout_roles, build_mlam_params)
+    from experiment.analysis.simulate_pair import (
+        PotSideScriptedHuman, make_mlam, STEPS)
+    from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld, ObjectState
+
+    for lay, role in [("forced_coordination", "supplier"), ("cramped_room", "normal"),
+                      ("asymmetric_advantages", "normal"), ("coordination_ring", "normal")]:
+        r = analyze_layout_roles(OvercookedGridworld.from_layout_name(lay), 1)
+        assert r["role"] == role, (lay, r)
+    assert analyze_layout_roles(
+        OvercookedGridworld.from_layout_name("forced_coordination"), 1
+    )["handoff"] == [(2, 1), (2, 2), (2, 3)]
+
+    mdp = OvercookedGridworld.from_layout_name("forced_coordination")
+    mlam = make_mlam(mdp)
+    human = PotSideScriptedHuman(mlam, excluded_roles=[]); human.set_agent_index(0)
+    bot = PingReactiveBot(mlam, excluded_roles=["deliver"]); bot.set_agent_index(1)
+    st = mdp.get_standard_start_state()
+    score = 0
+    for _ in range(STEPS):
+        a0, _i = human.action(st); a1, _i = bot.action(st); bot.note_step()
+        st, info = mdp.get_state_transition(st, (a0, a1))
+        score += sum(info["sparse_reward_by_agent"])
+    assert score >= 100, f"공급자 봇 + 규칙 기반 사람으로 60초 동안 수프 5개 미만: {score}"
+
+    # (d) 안전망: 봇이 물건을 들었는데 카운터가 전부 차 있어 할 일이 없는 상태
+    mdp2 = OvercookedGridworld.from_layout_name("cramped_room")
+    mlam2 = make_mlam(mdp2)
+    b2 = PingReactiveBot(mlam2, excluded_roles=["deliver"]); b2.set_agent_index(0)
+    s2 = mdp2.get_standard_start_state()
+    from overcooked_ai_py.mdp.overcooked_mdp import SoupState
+    s2.players[0].set_object(SoupState.get_soup(s2.players[0].position, num_onions=3, finished=True))
+    for c in mlam2.counter_drop:
+        if c not in s2.objects:
+            s2.add_object(ObjectState("dish", c))
+    b2._bot_tick_counter = 10**6 - 1  # 속도 제한이 걸리지 않는 틱
+    import experiment.agents.role_restricted_bot as rrb
+    old_div = rrb.BOT_SPEED_DIVISOR
+    rrb.BOT_SPEED_DIVISOR = 1
+    try:
+        act, _i = b2.action(s2)  # 예외 없이 무언가를 돌려줘야 한다
+    finally:
+        rrb.BOT_SPEED_DIVISOR = old_div
+
+    # (e) 옛 pickle 시뮬레이션: 핑 관련 새 속성 제거 후에도 동작
+    for attr in ("_incoming", "_active_ping", "_ack_pending", "_goal_bias", "_role_cache"):
+        b2.__dict__.pop(attr, None)
+    b2.ping_queue.append({"ping_type": "help", "step": 0, "sender_idx": 1})
+    for _ in range(PING_ACK_DELAY_STEPS):
+        b2.note_step()
+    assert b2.pop_ack() is True
+    print("PASS test_forced_layout_supplier_role_and_safety_net")
+
+
+def test_datalog_write_retries_on_permission_error():
+    """Test 25: Windows에서 파일이 잠겨 PermissionError가 나도 재시도로 저장된다."""
+    import builtins, os, pickle, tempfile
+    from experiment.server_ext import data_log as dl
+    tmp = tempfile.mkdtemp()
+    target = os.path.join(tmp, "x.pkl")
+    real_open = builtins.open
+    calls = {"n": 0}
+
+    def flaky_open(path, mode="r", *a, **k):
+        if str(path) == target and "w" in mode:
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise PermissionError(13, "locked")
+        return real_open(path, mode, *a, **k)
+    builtins.open = flaky_open
+    old_sleep = dl.time.sleep
+    dl.time.sleep = lambda s: None
+    try:
+        out = dl._dump_with_retry({"a": 1}, target)
+    finally:
+        builtins.open = real_open
+        dl.time.sleep = old_sleep
+    assert calls["n"] == 3 and str(out) == target
+    assert pickle.load(real_open(target, "rb")) == {"a": 1}
+    print("PASS test_datalog_write_retries_on_permission_error")
+
+
 if __name__ == "__main__":
     test_unknown_action_still_raises_keyerror()
     test_normal_move_unaffected()
@@ -909,13 +1041,14 @@ if __name__ == "__main__":
     test_unknown_ping_type_ignored()
     test_pings_land_in_trajectory()
     test_ping_routes_to_real_reactive_bot()
-    test_bot_shows_ok_ack_bubble_immediately_on_ping()
+    test_bot_shows_ok_ack_only_after_understanding_delay()
     test_tick_calls_note_step_on_bot()
     test_ping_appears_in_get_state()
     test_ping_disappears_after_display_window()
     test_activate_propagates_new_mdp_to_policies_with_update_hook()
     test_real_bot_update_for_layout_rebuilds_mlam_for_new_layout()
-    test_help_ping_clears_all_exclusions()
+    test_help_and_mine_pings_change_goal_choice_for_a_while()
+    test_goal_choice_by_distance_from_sender()
     test_bot_drops_undeliverable_soup_on_counter_instead_of_stalling()
     test_move_aside_bfs_helpers()
     test_move_ping_reroutes_around_blocker_in_open_area()
@@ -927,5 +1060,7 @@ if __name__ == "__main__":
     test_datalog_nickname_and_files()
     test_bot_delivers_when_counters_full_and_follows_oldest_order()
     test_build_class_instantiates_with_all_mixins()
+    test_forced_layout_supplier_role_and_safety_net()
+    test_datalog_write_retries_on_permission_error()
     test_end_to_end_logging_and_metrics()
     print("Phase 2 전체(핑 채널 + 봇 반응 + 로깅 + 지표 계산) 테스트 통과.")

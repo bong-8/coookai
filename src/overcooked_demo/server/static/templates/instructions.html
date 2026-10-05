@@ -35,136 +35,60 @@
     <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js" integrity="sha384-JjSmVgyd0p3pXB1rRibZUAYoIIy6OrQ6VrjIEaFf/nJGzIxFDsf4x0xIM+B07jRM" crossorigin="anonymous"></script>
   </head>
   <body>
-    <div class="container">
+    <div class="container" style="max-width: 760px;">
       <h4 class="text-center"><a href="./predefined">← 처음 화면으로</a></h4>
-      <p>
-        이 실험에서 여러분은 수프 가게의 요리사 두 명 중 한 명이 되어 파트너와 함께
-        <b>수프를 만들어 서빙</b>합니다. 파트너는 AI 봇이거나 다른 참가자입니다.
-        난이도(주방 배치)는 총 5단계이며 순서대로 진행되고, <b>각 단계는 60초</b>씩입니다.
-        (각 단계가 끝나면 잠시 뒤 다음 단계가 자동으로 시작됩니다.)
+
+      <h3 class="text-center" style="margin-top:20px;">게임 방법</h3>
+      <p class="text-center">
+        파트너와 함께 수프를 만들어 <b>주문 목록에 있는 수프를 서빙</b>하세요.
+        난이도는 5단계, 각 단계는 <b>60초</b>입니다.
       </p>
+      <img class="center" src="static/images/training0-annotated.png" style="width:100%; max-width:700px;">
 
       <hr>
-      <h3 class="text-center">주방 배치와 사물</h3>
-      <img class="center" src="static/images/training0.png" style="width:500px">
-      <p>사물의 이름은 아래와 같습니다.</p>
-      <img class="center" src="static/images/training0-annotated.png" style="width:800px">
-      <p style="font-size:0.9em;color:#666;">※ 그림의 영어 표기는 원본 게임 그림입니다. 양파/토마토 보급대, 냄비(Pot), 접시 보급대(Dish), 서빙대(Serve)를 뜻합니다.</p>
-
-      <hr>
-      <h3 class="text-center">이동과 상호작용</h3>
-      <img class="center" src="static/images/space-arrows.png" style="width:250px">
-      <p>
-        <b>방향키(← ↑ → ↓)</b>로 이동하고 <b>스페이스바</b>로 상호작용합니다.
-        상호작용은 사물을 <u>바라보고(그쪽으로 방향키를 누른 상태)</u> 스페이스바를 누르는 방식입니다.
-      </p>
+      <h4>조작</h4>
       <ul>
-        <li>빈 손으로 재료 보급대(양파/토마토)를 보고 스페이스바 → 재료를 집습니다.</li>
-        <li>재료를 든 채 빈 카운터를 보고 스페이스바 → 카운터에 내려놓습니다. (카운터의 물건도 같은 방식으로 다시 집을 수 있습니다.)</li>
-        <li>재료를 든 채 가득 차지 않은 냄비를 보고 스페이스바 → 냄비에 넣습니다. 냄비에는 최대 3개까지 들어갑니다.</li>
-        <li>빈 손으로 재료가 들어 있는 냄비를 보고 스페이스바 → 요리를 시작합니다. (3개가 다 차면 자동으로 시작되기도 합니다.)</li>
-        <li>접시를 들고 완성된 수프가 담긴 냄비를 보고 스페이스바 → 수프를 접시에 담습니다.</li>
-        <li>수프가 담긴 접시를 든 채 서빙대(회색 칸)를 보고 스페이스바 → <b>서빙(제출)</b>합니다.</li>
+        <li><b>방향키</b>로 이동, <b>스페이스바</b>로 상호작용(바라보는 물건을 집기·놓기·사용).</li>
+        <li>두 사람은 같은 칸에 설 수 없습니다.</li>
       </ul>
-      <p>
-        두 요리사는 <u><b>같은 칸에 동시에 있을 수 없습니다</b></u>. 서로 길을 막지 않게 주의하세요.
+
+      <h4>수프 만들기</h4>
+      <ol>
+        <li>재료(양파)를 집어 <b>냄비</b>에 3개 넣고, <b>빈손</b>으로 냄비 앞에서 스페이스바 → 요리 시작.</li>
+        <li><b>접시</b>를 집어 다 익은 냄비 앞에서 스페이스바 → 수프가 접시에 담깁니다.</li>
+        <li>수프를 들고 <b>서빙대</b>(회색 칸)에서 스페이스바 → 제출!</li>
+      </ol>
+      <p style="font-size:0.95em;color:#555;">
+        일부 난이도에서는 두 사람이 서로 다른 구역에서 일합니다. 이때는 가운데 카운터에
+        물건을 놓아 서로 전달하세요.
       </p>
 
-      <hr>
-      <h3 class="text-center">요리</h3>
-      <img class="center" src="static/images/soup.png" style="width:250px">
-      <p>
-        요리를 시작하면 냄비 위에 빨간 숫자가 나타나 조리 시간을 보여 줍니다(완성될 때까지 올라갑니다).
-        조리 시간은 재료로 정해집니다: 양파 1개당 {{ layout_conf.onion_time }}, 토마토 1개당 {{ layout_conf.tomato_time }}씩 더해집니다.
-        (숫자 단위는 게임 내부 틱입니다.)
-      </p>
-      <p>
-        수프의 기본 점수도 재료로 정해집니다: 양파 1개당 {{ layout_conf.onion_value }}점, 토마토 1개당 {{ layout_conf.tomato_value }}점.
-        예) 양파 3개 수프 = {{ layout_conf.onion_value * 3 }}점.
-      </p>
-
-      <hr>
-      <h3 class="text-center">주문 목록과 점수</h3>
-      <img class="center" src="static/images/info-panel.png" style="width:500px">
-      <p>
-        게임 화면 아래 정보 패널의 <b>"주문 목록"</b>에 지금 들어와 있는 주문이 아이콘으로 표시됩니다.
-        <b>주문 목록에 있는 수프를 서빙해야만 점수</b>가 됩니다.
-      </p>
+      <h4>주문과 점수</h4>
+      <img class="center" src="static/images/info-panel.png" style="width:100%; max-width:420px;">
       <ul>
-        <li><b>시작할 때</b> 주문이 1개 들어와 있습니다.</li>
-        <li>이후 <b>10초마다 새 주문이 1개씩 추가</b>됩니다. 주문에는 <b>만료(제한 시간)가 없어서</b>, 서빙하기 전까지 목록에 계속 남아 쌓입니다.</li>
-        <li>목록에 있는 수프를 서빙하면 <b>점수를 얻고 그 주문 1개가 목록에서 사라집니다.</b> 같은 주문이 여러 개 있으면 한 번에 하나씩만 사라집니다.</li>
-        <li>목록에 <b>없는</b> 수프를 서빙하면 <b>0점</b>이며 수프만 사라집니다. (주문 목록이 비어 있을 때 서빙해도 0점입니다.)</li>
-        <li>주문 목록의 순서는 난이도마다 항상 같습니다. (참가자마다 주문이 달라지지 않습니다.)</li>
+        <li>화면 아래 <b>"주문 목록"</b>에 있는 수프를 서빙하면 점수를 얻고, 그 주문은 사라집니다.</li>
+        <li>주문은 처음에 1개, 이후 <b>10초마다 1개씩</b> 늘어납니다(기한 없음).</li>
+        <li>목록에 없는 수프는 <b>0점</b>입니다.</li>
+        <li>양파 3개 수프 = {{ layout_conf.onion_value * 3 }}점. 마지막 난이도는 양파·토마토 수프가 주문으로 들어오며, "보너스"로 표시된 수프는 점수가 {{ layout_conf.order_bonus }}배입니다.</li>
       </ul>
-      <p>
-        <b>보너스 주문</b>이 있는 난이도(예: 마지막 단계의 양파+토마토 수프)에서는 해당 수프를
-        주문 목록에 맞춰 서빙할 때 기본 점수의 <b>{{ layout_conf.order_bonus }}배</b>를 받습니다.
-        보너스 주문은 화면의 "보너스:" 칸에 표시됩니다.
-      </p>
-      <p>
-        이 실험의 다섯 난이도 중 네 곳은 <b>양파 3개 수프</b>({{ layout_conf.onion_value * 3 }}점)만 주문으로 들어옵니다.
-        마지막 단계(counter_circuit)는 양파·토마토를 섞은 서로 다른 수프 주문이 들어오므로 목록의 아이콘을 잘 확인하세요.
-      </p>
 
-      <h5>수프 종류별 기본 점수와 조리 시간 (참고)</h5>
+      <h4>소통 버튼 (키 1~4)</h4>
+      <p>화면 아래 버튼으로 파트너에게 신호를 보낼 수 있습니다. AI 파트너는 잠깐 생각한 뒤 "OK"로 답하고 행동합니다.</p>
       <table>
-        <tr>
-          <th>재료</th>
-          <th>아이콘</th>
-          <th>기본 점수</th>
-          <th>조리 시간</th>
-        </tr>
-        {% for num_tomatoes in range(layout_conf.max_num_ingredients + 1) %}
-          {% for num_onions in range(layout_conf.max_num_ingredients + 1) %}
-            {% if num_tomatoes + num_onions > 0 and num_onions + num_tomatoes <= layout_conf.max_num_ingredients %}
-              <tr>
-                <td>{{ ("양파 " ~ num_onions ~ "개 ") if num_onions }}{{ ("토마토 " ~ num_tomatoes ~ "개") if num_tomatoes }}</td>
-                <td><img src="{{ "static/assets/new_sprites/soup_done_tomato_" ~ num_tomatoes ~ "_onion_" ~ num_onions ~ ".png" }}" style="width:75px;background-color: #e6b453;"></td>
-                <td>{{ layout_conf.onion_value * num_onions + layout_conf.tomato_value * num_tomatoes }}</td>
-                <td>{{ layout_conf.onion_time * num_onions + layout_conf.tomato_time * num_tomatoes }}</td>
-              </tr>
-            {% endif %}
-          {% endfor %}
-        {% endfor %}
+        <tr><th>버튼</th><th>의미</th><th>AI 파트너의 반응 (약 10초간)</th></tr>
+        <tr><td>1 도와줘</td><td>도움이 필요해요</td><td>서빙까지 포함해, <b>내 가까이</b>에 있는 일부터 도와줍니다.</td></tr>
+        <tr><td>2 비켜줘</td><td>길을 막고 있어요</td><td>옆으로 비켜 줍니다.</td></tr>
+        <tr><td>3 내가 할게</td><td>이 근처는 내가 할게요</td><td>서빙은 나에게 맡기고, <b>나와 먼 곳</b>의 일을 합니다.</td></tr>
+        <tr><td>4 OK</td><td>알겠어요</td><td>OK로 답합니다.</td></tr>
       </table>
 
-      <hr>
-      <h3 class="text-center">파트너에게 신호 보내기 (소통 버튼)</h3>
-      <p>
-        게임 화면 아래의 버튼 4개(또는 키보드 <b>1~4</b>)로 파트너에게 간단한 신호를 보낼 수 있습니다.
-        신호를 보내면 내 캐릭터 머리 위에 말풍선이 잠깐 표시됩니다.
-        <b>말은 이 4가지로만</b> 할 수 있습니다.
-      </p>
-      <table>
-        <tr><th>키</th><th>버튼</th><th>뜻</th><th>AI 봇의 반응</th></tr>
-        <tr><td>1</td><td>도와줘</td><td>도움이 필요해요</td><td>잠시 후 평소 하지 않던 서빙까지 포함해, 지금 가장 도움이 되는 일을 합니다.</td></tr>
-        <tr><td>2</td><td>비켜줘</td><td>길을 막고 있으니 비켜주세요</td><td>지금 서 있는 자리에서 옆으로 비켜 줍니다.</td></tr>
-        <tr><td>3</td><td>내가 할게</td><td>이 일은 내가 할게요</td><td>서빙을 하지 않고 나에게 맡깁니다.</td></tr>
-        <tr><td>4</td><td>OK</td><td>알겠어요 / 좋아요</td><td>OK 말풍선으로 답합니다. (행동 변화 없음)</td></tr>
-      </table>
-      <p>
-        AI 봇은 신호를 받으면 곧바로 "OK" 말풍선으로 확인했다고 알려 주고, 약간의 시간 뒤에 위 표대로 행동합니다.
-      </p>
-
-      <hr>
-      <h3 class="text-center">AI 파트너의 특징</h3>
+      <h4 style="margin-top:20px;">AI 파트너는</h4>
       <ul>
-        <li>AI 봇은 <b>재료를 가져오고, 냄비에 넣고, 요리를 시작하고, 접시를 가져오는 일</b>을 합니다.</li>
-        <li>기본적으로 <b>완성된 수프를 서빙대에 가져가는 일은 하지 않습니다.</b> (서빙은 여러분의 몫이며, "도와줘" 신호를 받았을 때만 도와줍니다.)</li>
-        <li>봇은 일부러 <b>천천히</b> 움직입니다(사람 속도의 약 1/3). 봇이 느려 보여도 정상입니다.</li>
-        <li>봇이 길을 막고 있으면 "비켜줘"를 사용해 보세요.</li>
+        <li>사람보다 <b>천천히</b> 움직입니다.</li>
+        <li>평소에는 재료·접시·요리를 맡고 <b>서빙은 거의 하지 않습니다</b>(위 "도와줘"를 쓰면 도와줍니다).</li>
       </ul>
-
-      <hr>
-      <h3 class="text-center">목표</h3>
-      <p>
-        각 단계의 60초 동안 <b>주문 목록에 있는 수프를 가능한 많이, 빠짐없이 서빙</b>해 점수를 높이는 것이 목표입니다.
-        남은 시간(Time Left), 점수(Score), 주문 목록은 화면 아래 패널에 표시됩니다.
-        모든 단계가 끝나면 "게임 기록 보기"에서 단계별 점수와 소통 버튼 사용 횟수를 확인할 수 있습니다.
-      </p>
       <p style="font-size:0.9em;color:#666;">
-        ※ 시작 화면에서 입력한 닉네임과 게임 중의 움직임·소통 버튼 사용 기록은 연구 목적으로 저장됩니다.
+        ※ 시작 화면에서 입력한 닉네임과 게임 중 움직임·소통 버튼 사용 기록은 연구 목적으로 저장됩니다.
       </p>
       <hr>
     </div>

@@ -29,7 +29,6 @@ import csv
 import os
 import pickle
 import re
-import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -61,6 +60,22 @@ def safe_filename_part(text):
     """파일/폴더 이름에 써도 안전한 형태로(한글/영문/숫자/_-.만 유지)."""
     cleaned = re.sub(r"[^\w\-.]+", "_", str(text), flags=re.UNICODE).strip("._")
     return cleaned or "anonymous"
+
+
+def _dump_with_retry(data, path, attempts=6, wait=0.5):
+    path = Path(path)
+    last = None
+    candidates = [path, path.with_name(path.stem + f"_retry{int(time.time())}" + path.suffix)]
+    for target in candidates:
+        for _ in range(attempts):
+            try:
+                with open(target, "wb") as f:
+                    pickle.dump(data, f)
+                return target
+            except PermissionError as e:
+                last = e
+                time.sleep(wait)
+    raise last
 
 
 class DataLogMixin:
@@ -150,15 +165,13 @@ class DataLogMixin:
         session_dir.mkdir(parents=True, exist_ok=True)
         path = session_dir / f"round{self._round_idx}_{safe_filename_part(layout)}.pkl"
 
-        # 임시 파일에 쓴 뒤 교체 — 쓰는 도중 서버가 꺼져도 깨진 pkl이 안 남게.
-        fd, tmp = tempfile.mkstemp(dir=str(session_dir), suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                pickle.dump(data, f)
-            os.replace(tmp, path)
-        finally:
-            if os.path.exists(tmp):
-                os.remove(tmp)
+        # (2026-10-05) 처음엔 "임시 파일에 쓰고 os.replace로 교체"였는데, Windows에서
+        # 문서 폴더(OneDrive 동기화/백신 실시간 검사)가 방금 만든 파일을 잠깐
+        # 붙잡아 os.replace가 PermissionError(13, "다른 프로세스가 파일을 사용
+        # 중")로 실패했고 빈 .tmp만 남았다. 그래서 최종 경로에 바로 쓰고, 잠겨
+        # 있으면 잠깐 기다렸다 재시도한다. 끝까지 안 되면 같은 폴더에 다른
+        # 이름으로 한 번 더 시도(데이터를 잃는 것보다 파일명이 달라지는 게 낫다).
+        _dump_with_retry(data, path)
 
         self._append_index(base, data, layout, path)
 
@@ -166,7 +179,16 @@ class DataLogMixin:
         index_path = base / "index.csv"
         new_file = not index_path.exists()
         last = data["trajectory"][-1]
-        with open(index_path, "a", newline="", encoding="utf-8-sig") as f:
+        for _ in range(6):
+            try:
+                f = open(index_path, "a", newline="", encoding="utf-8-sig")
+                break
+            except PermissionError:  # 엑셀로 열어둔 경우 등
+                time.sleep(0.5)
+        else:
+            print("[data_log] index.csv가 다른 프로그램에서 열려 있어 이번 줄은 기록하지 못했습니다(pkl은 저장됨).")
+            return
+        with f:
             w = csv.writer(f)
             if new_file:
                 w.writerow(["saved_at", "session_started", "game_type", "round",

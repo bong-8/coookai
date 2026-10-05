@@ -168,8 +168,11 @@ class PingMixin:
         """
         for bot_player_id, policy in getattr(self, "npc_policies", {}).items():
             if hasattr(policy, "ping_queue"):
+                # (2026-10-05) 예전엔 여기서 즉시 OK 말풍선을 띄웠는데, "0.1초도
+                # 안 돼서 OK가 뜨니 이해하고 반응한 게 아니라 OK부터 하고
+                # 이해하는 느낌"이라는 피드백으로, 이제는 봇이 핑을 '이해'한
+                # 시점(PING_ACK_DELAY_STEPS 뒤)에 tick()이 OK를 띄운다.
                 policy.ping_queue.append(entry)
-                self._show_ping_on_screen(bot_player_id, "ok")
 
     def apply_actions(self):
         result = super(PingMixin, self).apply_actions()
@@ -180,9 +183,11 @@ class PingMixin:
 
     def tick(self):
         # PingReactiveBot의 반응 지연 계산용 스텝 카운터를 매 tick 갱신.
-        for policy in getattr(self, "npc_policies", {}).values():
+        for bot_player_id, policy in getattr(self, "npc_policies", {}).items():
             if hasattr(policy, "note_step"):
                 policy.note_step()
+            if hasattr(policy, "pop_ack") and policy.pop_ack():
+                self._show_ping_on_screen(bot_player_id, "ok")
         return super(PingMixin, self).tick()
 
     def activate(self):

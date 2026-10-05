@@ -60,6 +60,51 @@ def _ingredient_names(recipe_like):
     return [getattr(i, "name", i) for i in ings]
 
 
+# ── 레이아웃별 "봇이 실제로 할 수 있는 일" 분석 (2026-10-05) ─────────────
+# 피드백: forced_coordination처럼 한 플레이어는 재료·접시 쪽에만, 다른 플레이어는
+# 냄비·서빙 쪽에만 갈 수 있는 레이아웃에서, 봇이 "서빙 불가 / 접시를 가끔만
+# 듦" 같은 일반 규칙을 그대로 따르면 게임 진행 자체가 막힌다(원본
+# GreedyHumanModel 주석도 이 레이아웃에서는 동작 안 한다고 경고한다). 그래서
+# 레이아웃 지형(걸어서 닿을 수 있는 칸)을 분석해, 봇이 냄비/서빙대에 아예
+# 못 닿는 레이아웃에서는 "공급자(supplier)" 역할로 바꾼다 — 사람과 공유하는
+# 카운터(handoff)에 접시와 양파를 계속 채워주는 일만 한다.
+def _reachable_positions(mdp, start):
+    walkable = set(mdp.get_valid_player_positions())
+    seen = {start}
+    stack = [start]
+    while stack:
+        pos = stack.pop()
+        for d in Direction.ALL_DIRECTIONS:
+            nxt = Action.move_in_direction(pos, d)
+            if nxt in walkable and nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    return seen
+
+
+def _adjacent_to(reach, pos):
+    return any(
+        Action.move_in_direction(pos, d) in reach for d in Direction.ALL_DIRECTIONS
+    )
+
+
+def analyze_layout_roles(mdp, agent_index):
+    """봇이 이 레이아웃에서 어떤 역할을 맡아야 하는지.
+    반환: {"role": "normal" | "supplier", "handoff": [사람과 공유하는 카운터 좌표]}"""
+    starts = mdp.start_player_positions
+    mine = _reachable_positions(mdp, starts[agent_index])
+    other = _reachable_positions(mdp, starts[1 - agent_index])
+    key_feats = list(mdp.get_pot_locations()) + list(mdp.get_serving_locations())
+    can_cook_or_serve = any(_adjacent_to(mine, f) for f in key_feats)
+    if can_cook_or_serve:
+        return {"role": "normal", "handoff": []}
+    handoff = [
+        c for c in mdp.get_counter_locations()
+        if _adjacent_to(mine, c) and _adjacent_to(other, c)
+    ]
+    return {"role": "supplier", "handoff": handoff}
+
+
 # ── Phase 1: 역할 제한 ──────────────────────────────────────────────
 class RoleRestrictedBot(GreedyHumanModel):
     """
@@ -153,7 +198,21 @@ class RoleRestrictedBot(GreedyHumanModel):
             return Action.STAY, {
                 "action_probs": self.a_probs_from_action(Action.STAY)
             }
-        return super().action(state)
+        if self._role_info()["role"] == "supplier":
+            return self._supplier_action(state)
+        try:
+            return super().action(state)
+        except AssertionError as e:
+            # 안전망(2026-10-05): "할 수 있는 일이 하나도 없는 상황"(예: 카운터가
+            # 전부 차서 든 물건을 내려놓을 곳도 없음)에서 어설션이 터지면 NPC
+            # 전용 스레드가 조용히 죽어 게임 전체가 멈춘다(위 getattr 주석의
+            # 59.99초 멈춤과 같은 메커니즘). 멈춘 채 두기보다 이번 틱은 가만히
+            # 있고 다음 틱에 다시 시도한다.
+            msg = str(e)[:80]
+            if getattr(self, "_last_warned", None) != msg:
+                self._last_warned = msg
+                print(f"[bot] 이번 틱에 할 일이 없어 대기합니다: {msg}")
+            return Action.STAY, {"action_probs": self.a_probs_from_action(Action.STAY)}
 
     def reset(self):
         """
@@ -206,6 +265,66 @@ class RoleRestrictedBot(GreedyHumanModel):
             mdp, build_mlam_params(mdp)
         )
         self.mdp = mdp
+
+    def _role_info(self):
+        """레이아웃 분석 결과(캐시). getattr: 옛 pickle에는 속성이 없다."""
+        key = (getattr(self.mlam.mdp, "layout_name", None), self.agent_index)
+        cache = getattr(self, "_role_cache", None)
+        if cache is None or cache[0] != key:
+            cache = (key, analyze_layout_roles(self.mlam.mdp, self.agent_index))
+            self._role_cache = cache
+        return cache[1]
+
+    def _supplier_goals(self, state):
+        """공급자 역할: 사람과 공유하는 카운터(handoff)에 접시 1개 + 양파를
+        계속 채워 둔다. 반환: 모션 목표 리스트, 또는 None(=지금은 기다림).
+
+        규칙: 손이 비었을 때 handoff 빈 칸이 없으면 기다린다. 있으면 (접시가 하나도
+        없고 냄비가 일하는 중이거나 양파가 이미 있으면) 접시를, 아니면 양파를
+        집는다. 접시를 맨 마지막 칸에서 막지 않도록, 양파는 "빈 칸이 2개 이상이거나
+        접시가 이미 있을 때만" 집는다. 든 물건은 빈 handoff 칸에 내려놓는다."""
+        am = self.mlam
+        mdp = am.mdp
+        info = self._role_info()
+        handoff = info["handoff"]
+        player = state.players[self.agent_index]
+        on_counter = {pos: state.objects[pos] for pos in handoff if pos in state.objects}
+        free = [c for c in handoff if c not in on_counter]
+        n_dish = sum(1 for o in on_counter.values() if o.name == "dish")
+        n_onion = sum(1 for o in on_counter.values() if o.name == "onion")
+
+        if player.has_object():
+            if not free:
+                return None
+            return am._get_ml_actions_for_positions(free)
+
+        if not free:
+            return None
+        pots = mdp.get_pot_states(state)
+        pot_busy = any(pots[k] for k in pots if k != "empty")
+        no_counter_items = defaultdict(list)
+        if n_dish == 0 and (pot_busy or n_onion >= 1 or len(free) == 1):
+            return am.pickup_dish_actions(no_counter_items, only_use_dispensers=True)
+        if n_dish >= 1 or len(free) >= 2:
+            return am.pickup_onion_actions(no_counter_items, only_use_dispensers=True)
+        return am.pickup_dish_actions(no_counter_items, only_use_dispensers=True)
+
+    def _supplier_action(self, state):
+        goals = self._supplier_goals(state)
+        player = state.players[self.agent_index]
+        if goals:
+            goals = [
+                g for g in goals
+                if self.mlam.motion_planner.is_valid_motion_start_goal_pair(
+                    player.pos_and_or, g
+                )
+            ]
+        if not goals:
+            return Action.STAY, {"action_probs": self.a_probs_from_action(Action.STAY)}
+        _, chosen_action, action_probs = self.choose_motion_goal(
+            state.players_pos_and_or[self.agent_index], goals
+        )
+        return chosen_action, {"action_probs": action_probs}
 
     def _target_order(self, state):
         """봇이 만들 수프 = '아직 목록에서 삭제되지 않은 주문 중 가장 먼저 추가된 것'.
@@ -408,6 +527,16 @@ BOT_SPEED_DIVISOR = 3  # 1=평소 속도, 2=절반 속도, 3=1/3 속도...
 # agent.pickle을 다시 만들 필요도 없다(값만 bot_tick_counter와 비교하는
 # 용도일 뿐, pickle에 안 박혀 있음).
 
+# 핑을 "이해"하는 데 걸리는 시간(2026-10-05 피드백: "0.1초도 안 돼서 바로 OK가
+# 뜨는 건 이해하고 반응한 게 아니라 OK부터 하고 이해하는 느낌"). 봇은 핑을 받고
+# 이 시간이 지난 뒤에야 (1) OK 말풍선을 띄우고 (2) 그 핑에 맞게 행동하기
+# 시작한다 — 즉 "이해(지연) → OK → 행동" 순서. 10fps 기준 8틱 ≈ 0.8초.
+PING_ACK_DELAY_STEPS = 8
+# 도와줘/내가 할게 효과가 지속되는 시간: 100틱 ≈ 10초(다음 핑이 오면 교체).
+# 예전엔 핑 하나가 "의사결정 딱 한 번"에만 반영됐고, 속도 제한(BOT_SPEED_DIVISOR)
+# 때문에 3틱 중 2틱에서는 그마저도 버려져서 핑이 거의 티가 안 났다.
+PING_EFFECT_STEPS = 100
+
 REACTION_DELAY_STEPS = 5  # 약 0.5~1초 상당(스텝 길이에 따라 조정) 지연 후 반응
 # 핑 유효 반응 창("핑을 보낸 뒤 몇 스텝 안에 반응해야 반응으로 인정하는가")은
 # REACTION_DELAY_STEPS*4 스텝으로 아래에서 계산된다. 이 값은 서버 틱 속도에
@@ -525,6 +654,10 @@ class PingReactiveBot(RoleRestrictedBot):
         # ml_action()이 쓸, 이번 틱에 반응할 "즉시성" 핑(help/mine/ok) 하나.
         # action()의 드레인 단계에서 채워지고 ml_action()에서 한 번만 소비된다.
         self._pending_instant_entry = None
+        self._incoming = []
+        self._active_ping = None
+        self._ack_pending = False
+        self._goal_bias = None
         # "비켜줘(move)" 모드 상태 — help/mine처럼 ml_action()의 motion_goals
         # 선택이 아니라 action() 레벨에서 직접 다루므로 별도로 관리한다.
         self._move_ping_active_until_step = None
@@ -534,8 +667,12 @@ class PingReactiveBot(RoleRestrictedBot):
         self._walkable_positions = set(mlam.mdp.get_valid_player_positions())
 
     def note_step(self):
-        """서버 tick마다 호출해 내부 스텝 카운터를 올린다 (지연 계산용)."""
+        """서버 tick마다 호출해 내부 스텝 카운터를 올리고, 핑 대기열을 처리한다.
+        핑 처리를 NPC 스레드의 action()이 아니라 이 게임 틱 호출에 두는 이유:
+        (1) 지연 시간이 항상 "게임 틱 수"로 정확하고, (2) 핑 큐/대기열을 한
+        스레드만 만져서 경합이 없다."""
         self._curr_step += 1
+        self._drain_ping_queue()
 
     def update_for_layout(self, mdp):
         super().update_for_layout(mdp)
@@ -550,32 +687,75 @@ class PingReactiveBot(RoleRestrictedBot):
         self._move_block_since_step = None
         self._last_move_action = None
 
-    def _drain_ping_queue(self):
-        """ping_queue를 앞에서부터(시간순) 하나씩 본다.
+    def _ensure_ping_state(self):
+        # 옛 agent.pickle에는 이 속성들이 없다(pickle은 __init__을 안 돌림).
+        if not hasattr(self, "_incoming"):
+            self._incoming = []
+            self._active_ping = None
+            self._ack_pending = False
 
-        "move"(비켜줘) 핑은 보이는 즉시 "비켜주기 모드"를 (재)활성화하고
-        계속 다음 걸 본다 — help/mine/ok와는 분리된 채널이라, 그쪽의 기존
-        "틱당 1개씩 순서대로 소비" 리듬(옛 _latest_unconsumed_ping())을
-        방해하면 안 된다. "move"가 아닌 아직 유효한 핑을 처음 만나면 그
-        자리에서 멈추고 반환한다 — 그 뒤에 남은 핑들은 다음 틱들에 걸쳐
-        그대로 순서대로 처리된다(기존과 동일한 리듬, 회귀 없음).
-        """
+    def pop_ack(self):
+        """서버(PingMixin.tick)가 매 틱 호출: 봇이 방금 핑을 '이해'했으면 True를
+        한 번 돌려준다 — 그때 OK 말풍선을 띄운다."""
+        self._ensure_ping_state()
+        if self._ack_pending:
+            self._ack_pending = False
+            return True
+        return False
+
+    def _drain_ping_queue(self):
+        """새로 들어온 핑을 '이해 대기열'에 넣고, PING_ACK_DELAY_STEPS가 지난
+        핑을 활성화한다. 활성화 순간 OK 표시 요청(_ack_pending)을 켠다.
+
+        시간 기준은 핑이 담고 온 step(게임의 curr_tick)이 아니라 봇이 그 핑을
+        처음 본 시점의 자기 카운터(_curr_step)다 — 두 카운터는 라운드가 바뀌면
+        어긋날 수 있어서(게임은 라운드마다 0부터, 봇은 누적) 서로 섞어 비교하면
+        두 번째 라운드부터 핑이 전부 '이미 만료'로 처리될 위험이 있다."""
+        self._ensure_ping_state()
         while self.ping_queue:
             entry = self.ping_queue.popleft()
-            expired = self._curr_step - entry["step"] > REACTION_DELAY_STEPS * 4
-            if entry["ping_type"] == MOVE_PING_TYPE:
-                if not expired:
-                    self._move_ping_active_until_step = (
-                        self._curr_step + REACTION_DELAY_STEPS * 4
-                    )
-                    self._move_ping_sender_idx = entry.get("sender_idx")
-                    self._move_block_since_step = None
-                    self._last_move_action = None
-                continue
-            if expired:
-                continue
-            return entry
-        return None
+            self._incoming.append(
+                # -1: 이 핑은 보낸 틱 "다음" note_step에서 처음 보이므로 그 한 틱을
+                # 빼야 정확히 PING_ACK_DELAY_STEPS틱 뒤에 활성화된다.
+                {"entry": entry, "due": self._curr_step + PING_ACK_DELAY_STEPS - 1}
+            )
+        waiting = []
+        for item in self._incoming:
+            if item["due"] > self._curr_step:
+                waiting.append(item)
+            else:
+                self._activate_ping(item["entry"])
+        self._incoming = waiting
+
+    def _activate_ping(self, entry):
+        ping_type = entry["ping_type"]
+        self._ack_pending = True
+        if ping_type == MOVE_PING_TYPE:
+            self._move_ping_active_until_step = (
+                self._curr_step + REACTION_DELAY_STEPS * 4
+            )
+            self._move_ping_sender_idx = entry.get("sender_idx")
+            self._move_block_since_step = None
+            self._last_move_action = None
+        elif ping_type in ("help", "mine"):
+            self._active_ping = {
+                "type": ping_type,
+                "sender_idx": entry.get("sender_idx"),
+                "until": self._curr_step + PING_EFFECT_STEPS,
+            }
+
+    def _active_ping_effect(self, state):
+        """지금 유효한 도와줘/내가 할게 효과 -> (type, 보낸 사람 위치) 또는 None."""
+        ap = getattr(self, "_active_ping", None)
+        if not ap:
+            return None
+        if self._curr_step > ap["until"]:
+            self._active_ping = None
+            return None
+        idx = ap.get("sender_idx")
+        if idx is None or idx == self.agent_index or not (0 <= idx < len(state.players)):
+            return None
+        return ap["type"], state.players[idx].position
 
     def _current_goal_position(self, state):
         """역할 제한이 반영된, 지금 봇이 원래 가려던 목적지 칸.
@@ -634,8 +814,6 @@ class PingReactiveBot(RoleRestrictedBot):
         return retreat if retreat is not None else Action.STAY
 
     def action(self, state):
-        instant_entry = self._drain_ping_queue()
-        self._pending_instant_entry = instant_entry
 
         if self._move_ping_active_until_step is not None:
             if self._curr_step > self._move_ping_active_until_step:
@@ -660,30 +838,37 @@ class PingReactiveBot(RoleRestrictedBot):
                         # 안 바꾸고 아래 super().action()으로 그대로 진행한다
                         # — "인접할 때만 실제 반응"하기로 한 설계 결정.
 
-        return super().action(state)
+        effect = self._active_ping_effect(state)
+        if effect is None:
+            return super().action(state)
+        ping_type, sender_pos = effect
+        # 도와줘: 역할 제한을 풀고 "나(보낸 사람)와 가까운" 일부터 도와준다.
+        # 내가 할게: 서빙은 사람 몫으로 두고 "나와 먼" 일부터 맡는다.
+        saved_roles = set(self.excluded_roles)
+        if ping_type == "help":
+            self.excluded_roles = set()
+            self._goal_bias = ("near", sender_pos)
+        else:
+            self.excluded_roles = saved_roles | {"deliver"}
+            self._goal_bias = ("far", sender_pos)
+        try:
+            return super().action(state)
+        finally:
+            self.excluded_roles = saved_roles
+            self._goal_bias = None
 
-    def ml_action(self, state):
-        entry = self._pending_instant_entry
-        self._pending_instant_entry = None
-        if entry is not None:
-            ping_type = entry["ping_type"]
-            rule = _PING_RESPONSE_MAP.get(ping_type)
-            if rule == "ALL":
-                # 도와줘: 제한을 전부 일시 해제하고 그 순간 가장 효율적인
-                # 행동(배달 등 평소 제한된 역할 포함)을 하도록 함.
-                original = set(self.excluded_roles)
-                self.excluded_roles = set()
-                try:
-                    return super().ml_action(state)
-                finally:
-                    self.excluded_roles = original
-            elif rule:
-                # 지정된 역할을 일시적으로 제외 목록에 추가 (상대에게 양보)
-                original = set(self.excluded_roles)
-                self.excluded_roles = original | {rule}
-                try:
-                    return super().ml_action(state)
-                finally:
-                    self.excluded_roles = original
-            # rule이 None(ok)이면 행동 변화 없이 아래로 그대로 진행
-        return super().ml_action(state)
+    def choose_motion_goal(self, start_pos_and_or, motion_goals):
+        """도와줘/내가 할게 효과 중이면, 봇 자신과의 거리 대신 '핑을 보낸 사람과의
+        거리'로 목표를 고른다(가까운 곳 / 먼 곳). 거리가 같으면 평소처럼 봇이
+        가기 쉬운(이동 비용이 적은) 쪽."""
+        bias = getattr(self, "_goal_bias", None)
+        if not bias or not motion_goals or self.hl_boltzmann_rational:
+            return super().choose_motion_goal(start_pos_and_or, motion_goals)
+        kind, ref_pos = bias
+        scored = []
+        for goal in motion_goals:
+            plan, _, cost = self.mlam.motion_planner.get_plan(start_pos_and_or, goal)
+            dist = _manhattan_distance(goal[0], ref_pos)
+            scored.append((dist if kind == "near" else -dist, cost, goal, plan[0]))
+        _, _, goal, first_action = min(scored, key=lambda x: (x[0], x[1]))
+        return goal, first_action, self.a_probs_from_action(first_action)
