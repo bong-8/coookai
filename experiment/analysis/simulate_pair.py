@@ -39,7 +39,11 @@ class FullSpeedPlanner(RoleRestrictedBot):
     """사람 대용: 역할 제한 없음, 속도 제한 없음."""
 
     def action(self, state):
-        return GreedyHumanModel.action(self, state)
+        self._idle_wait = False
+        result = GreedyHumanModel.action(self, state)
+        if self._idle_wait:
+            return Action.STAY, {}
+        return result
 
 
 class PotSideScriptedHuman(RoleRestrictedBot):
@@ -62,17 +66,21 @@ class PotSideScriptedHuman(RoleRestrictedBot):
             elif n == "dish" and (pots["ready"] or pots["cooking"]):
                 goals = am.pickup_soup_with_dish_actions(pots, only_nearly_ready=False)
             elif n == "onion":
-                goals = am.put_onion_in_pot_actions(pots)
+                goals = am.put_onion_in_pot_actions(self._compatible_pots(state, pots, "onion"))
+            elif n == "tomato":
+                goals = am.put_tomato_in_pot_actions(self._compatible_pots(state, pots, "tomato"))
         else:
-            full = pots.get("3_items", [])
-            if full:
-                d = defaultdict(list)
-                d["3_items"] = full
-                goals = am.start_cooking_actions(d)
+            ready_pots = self._pots_ready_to_cook(state, pots)
+            if ready_pots:
+                goals = am.start_cooking_actions(ready_pots)
             elif (pots["ready"] or pots["cooking"]) and co["dish"]:
                 goals = am.pickup_dish_actions(co)
-            elif co["onion"]:
-                goals = am.pickup_onion_actions(co)
+            else:
+                need = self._needed_ingredient(state, self._target_order(state), pots)
+                if need == "tomato" and co["tomato"]:
+                    goals = am.pickup_tomato_actions(co)
+                elif need == "onion" and co["onion"]:
+                    goals = am.pickup_onion_actions(co)
         goals = [
             g for g in goals
             if am.motion_planner.is_valid_motion_start_goal_pair(p.pos_and_or, g)
@@ -101,7 +109,7 @@ def make_mlam(mdp):
 def run(layout, partner_kind, steps=STEPS):
     mdp = OvercookedGridworld.from_layout_name(layout)
     mlam = make_mlam(mdp)
-    human_cls = PotSideScriptedHuman if layout == "forced_coordination" else FullSpeedPlanner
+    human_cls = PotSideScriptedHuman if layout.startswith("forced_coordination") else FullSpeedPlanner
     human = human_cls(mlam, excluded_roles=[])
     human.set_agent_index(0)
     if partner_kind == "human_proxy":

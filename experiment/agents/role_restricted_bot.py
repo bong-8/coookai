@@ -60,6 +60,21 @@ DELIVER_WHEN_FREE_COUNTERS_AT_MOST = 1
 BOT_MAY_DELIVER = True
 
 
+def _fits(have, order_ingredients):
+    """have(재료 리스트)가 order_ingredients의 부분 멀티셋인가(= 이 주문으로 이어갈 수 있나)."""
+    remaining = list(order_ingredients)
+    for h in have:
+        if h in remaining:
+            remaining.remove(h)
+        else:
+            return False
+    return True
+
+
+def _same_multiset(a, b):
+    return sorted(a) == sorted(b)
+
+
 def _ingredient_names(recipe_like):
     """Recipe/SoupState 비슷한 객체에서 재료 이름 리스트를 뽑는다."""
     ings = recipe_like.ingredients
@@ -207,7 +222,13 @@ class RoleRestrictedBot(GreedyHumanModel):
         if self._role_info()["role"] == "supplier":
             return self._supplier_action(state)
         try:
-            return super().action(state)
+            self._idle_wait = False
+            result = super().action(state)
+            if self._idle_wait:
+                return Action.STAY, {
+                    "action_probs": self.a_probs_from_action(Action.STAY)
+                }
+            return result
         except AssertionError as e:
             # 안전망(2026-10-05): "할 수 있는 일이 하나도 없는 상황"(예: 카운터가
             # 전부 차서 든 물건을 내려놓을 곳도 없음)에서 어설션이 터지면 NPC
@@ -297,7 +318,8 @@ class RoleRestrictedBot(GreedyHumanModel):
         on_counter = {pos: state.objects[pos] for pos in handoff if pos in state.objects}
         free = [c for c in handoff if c not in on_counter]
         n_dish = sum(1 for o in on_counter.values() if o.name == "dish")
-        n_onion = sum(1 for o in on_counter.values() if o.name == "onion")
+        counter_ings = [o.name for o in on_counter.values() if o.name in ("onion", "tomato")]
+        n_ing = len(counter_ings)
 
         if player.has_object():
             if not free:
@@ -309,9 +331,15 @@ class RoleRestrictedBot(GreedyHumanModel):
         pots = mdp.get_pot_states(state)
         pot_busy = any(pots[k] for k in pots if k != "empty")
         no_counter_items = defaultdict(list)
-        if n_dish == 0 and (pot_busy or n_onion >= 1 or len(free) == 1):
+        if n_dish == 0 and (pot_busy or n_ing >= 1 or len(free) == 1):
             return am.pickup_dish_actions(no_counter_items, only_use_dispensers=True)
         if n_dish >= 1 or len(free) >= 2:
+            pool = list(counter_ings) + self._other_held_ingredients(state)
+            for h in self._partial_pot_contents(state, pots):
+                pool += h
+            need = self._missing_ingredient(state, pool) or "onion"
+            if need == "tomato" and mdp.get_tomato_dispenser_locations():
+                return am.pickup_tomato_actions(no_counter_items)
             return am.pickup_onion_actions(no_counter_items, only_use_dispensers=True)
         return am.pickup_dish_actions(no_counter_items, only_use_dispensers=True)
 
@@ -332,44 +360,130 @@ class RoleRestrictedBot(GreedyHumanModel):
         )
         return chosen_action, {"action_probs": action_probs}
 
+    def _open_order_list(self, state):
+        orders = getattr(self, "open_orders", None)
+        return list(orders) if orders else [list(state.all_orders)[0]]
+
+    def _partial_pot_contents(self, state, pot_states_dict=None):
+        """아직 조리 시작 전인(비지 않았고 가득 차지도 않은) 냄비들의 재료 리스트."""
+        if pot_states_dict is None:
+            pot_states_dict = self.mlam.mdp.get_pot_states(state)
+        out = []
+        for key, positions in pot_states_dict.items():
+            if not key.endswith("_items") or key == "empty":
+                continue
+            for pos in positions:
+                have = list(_ingredient_names(state.get_object(pos)))
+                if have:
+                    out.append(have)
+        return out
+
     def _target_order(self, state):
         """봇이 만들 수프 = '아직 목록에서 삭제되지 않은 주문 중 가장 먼저 추가된 것'.
+        단, 이미 재료가 일부 들어간 냄비가 있으면(혼합 주문 레이아웃에서 다른 메뉴
+        재료를 섞지 않도록) 그 냄비를 이어갈 수 있는 가장 오래된 주문을 고른다.
         게임(OrderQueueMixin)이 매 틱 self.open_orders를 갱신해 준다. 주문
         목록이 비어 있거나(모두 처리) 이 속성이 없으면(구형 pickle/단위 테스트)
         레이아웃의 허용 레시피 첫 번째로 대체한다. getattr: pickle.load는
         __init__을 다시 안 돌리므로 속성이 없을 수 있다."""
-        orders = getattr(self, "open_orders", None)
-        if orders:
-            return orders[0]
-        return list(state.all_orders)[0]
+        orders = self._open_order_list(state)
+        partials = self._partial_pot_contents(state)
+        if partials:
+            for o in orders:
+                names = list(_ingredient_names(o))
+                if any(_fits(h, names) for h in partials):
+                    return o
+        return orders[0]
+
+    def _missing_ingredient(self, state, have_pool):
+        """열린 주문들을 오래된 순서로 훑으며, 이미 가진 재료(have_pool)를 차례로
+        배정하고 처음으로 모자라는 재료 하나를 반환(없으면 None)."""
+        pool = list(have_pool)
+        for o in self._open_order_list(state):
+            remaining = []
+            tmp = list(pool)
+            for ing in _ingredient_names(o):
+                if ing in tmp:
+                    tmp.remove(ing)
+                else:
+                    remaining.append(ing)
+            if remaining:
+                return "onion" if "onion" in remaining else remaining[0]
+            pool = tmp
+        return None
+
+    def _other_held_ingredients(self, state):
+        out = []
+        for i, pl in enumerate(state.players):
+            if i != self.agent_index and pl.has_object():
+                name = pl.get_object().name
+                if name in ("onion", "tomato"):
+                    out.append(name)
+        return out
 
     def _needed_ingredient(self, state, target, pot_states_dict):
-        """지금 들고 올 재료: 일부 채워진 냄비가 있으면 target과 비교해 모자란
-        재료, 없으면 target의 첫 재료(양파 우선)."""
+        """지금 들고 올 재료: target에서 (이어가는 냄비의 재료 + 파트너가 이미 들고 있는
+        재료)를 뺀 나머지 중 하나(양파 우선). 파트너가 남은 재료를 이미 들고 있으면
+        None(= 지금은 재료를 안 집는다; 같은 재료를 동시에 집어 3번째가 엉뚱한
+        메뉴가 되는 것을 막음)."""
         want = list(_ingredient_names(target))
-        for key, positions in pot_states_dict.items():
-            if not key.endswith("_items") or key == "empty":
-                continue
-            n = int(key.split("_")[0])
-            if n >= len(want):
-                continue  # 이미 다 찬 냄비는 조리 시작 대상
-            for pos in positions:
-                have = _ingredient_names(state.get_object(pos))
-                remaining = list(want)
-                ok = True
-                for h in have:
-                    if h in remaining:
-                        remaining.remove(h)
-                    else:
-                        ok = False
-                        break
-                if ok and remaining:
-                    return "onion" if "onion" in remaining else remaining[0]
-        return "onion" if "onion" in want else want[0]
+        base = []
+        for have in self._partial_pot_contents(state, pot_states_dict):
+            if _fits(have, want) and len(have) > len(base):
+                base = have
+        remaining = list(want)
+        for h in base:
+            remaining.remove(h)
+        if not remaining:
+            return "onion" if "onion" in want else want[0]
+        for h in self._other_held_ingredients(state):
+            if h in remaining:
+                remaining.remove(h)
+        if not remaining:
+            return None
+        return "onion" if "onion" in remaining else remaining[0]
 
     def _free_counter_count(self, state):
         empty = set(self.mlam.mdp.get_empty_counter_locations(state))
         return len([c for c in self.mlam.counter_drop if c in empty])
+
+    def _pots_ready_to_cook(self, state, pot_states_dict):
+        """조리를 시작할 냄비들: 내용물이 열린 주문 중 하나와 정확히 같은 냄비 우선,
+        없으면 가득 찬(최대 재료) 냄비(잘못 채워졌어도 비워야 다음 요리를 하므로)."""
+        orders = [list(_ingredient_names(o)) for o in self._open_order_list(state)]
+        exact = defaultdict(list)
+        full = defaultdict(list)
+        max_n = max((len(o) for o in orders), default=3)
+        for key, positions in pot_states_dict.items():
+            if not key.endswith("_items") or key == "empty":
+                continue
+            n = int(key.split("_")[0])
+            for pos in positions:
+                have = list(_ingredient_names(state.get_object(pos)))
+                if any(_same_multiset(have, o) for o in orders):
+                    exact[key].append(pos)
+                elif n >= max_n:
+                    full[key].append(pos)
+        return exact or full
+
+    def _compatible_pots(self, state, pot_states_dict, ingredient):
+        """들고 있는 재료를 넣어도 어떤 열린 주문과 어긋나지 않는 냄비만 남긴다
+        (모두 어긋나면 원래 그대로 — 멈추는 것보다 낫다)."""
+        orders = [list(_ingredient_names(o)) for o in self._open_order_list(state)]
+        out = defaultdict(list)
+        for key, positions in pot_states_dict.items():
+            if key in ("empty",):
+                out[key] = list(positions)
+                continue
+            if not key.endswith("_items"):
+                out[key] = list(positions)
+                continue
+            for pos in positions:
+                have = list(_ingredient_names(state.get_object(pos))) + [ingredient]
+                if any(_fits(have, o) for o in orders):
+                    out[key].append(pos)
+        has_target = any(out.get(k) for k in out if k == "empty" or k.endswith("_items"))
+        return out if has_target else defaultdict(list)
 
     def _deliver_allowed(self, state):
         if "deliver" not in self.excluded_roles:
@@ -398,27 +512,35 @@ class RoleRestrictedBot(GreedyHumanModel):
                 if ready or cooking:
                     motion_goals += am.pickup_dish_actions(counter_objects)
             if "start_cooking" not in self.excluded_roles:
-                next_order = self._target_order(state)
-                key = "{}_items".format(len(next_order.ingredients))
-                if pot_states_dict.get(key):
-                    only = defaultdict(list)
-                    only[key] = pot_states_dict[key]
+                only = self._pots_ready_to_cook(state, pot_states_dict)
+                if only:
                     motion_goals += am.start_cooking_actions(only)
-            if "pickup_onion" not in self.excluded_roles:
+            # 재료는 "넣을 냄비가 있을 때만, 그리고 완성된 수프가 기다리고 있지 않을
+            # 때만" 집는다. 그렇지 않으면(혼합 주문 시뮬레이션에서 발견) 완성된 수프를
+            # 두고 재료를 들고 카운터에 내려놓기만 반복하며 카운터를 막았다.
+            has_room = bool(pot_states_dict["empty"]) or bool(
+                self._partial_pot_contents(state, pot_states_dict))
+            if (
+                "pickup_onion" not in self.excluded_roles
+                and has_room
+                and not pot_states_dict["ready"]
+            ):
                 # 만들 수프(가장 오래된 열린 주문)에 필요한 재료만 집는다.
                 need = self._needed_ingredient(
                     state, self._target_order(state), pot_states_dict
                 )
                 if need == "tomato":
                     motion_goals += am.pickup_tomato_actions(counter_objects)
-                else:
+                elif need == "onion":
                     motion_goals += am.pickup_onion_actions(counter_objects)
         else:
             obj_name = player.get_object().name
             if obj_name == "onion" and "put_in_pot" not in self.excluded_roles:
-                motion_goals += am.put_onion_in_pot_actions(pot_states_dict)
+                motion_goals += am.put_onion_in_pot_actions(
+                    self._compatible_pots(state, pot_states_dict, "onion"))
             elif obj_name == "tomato" and "put_in_pot" not in self.excluded_roles:
-                motion_goals += am.put_tomato_in_pot_actions(pot_states_dict)
+                motion_goals += am.put_tomato_in_pot_actions(
+                    self._compatible_pots(state, pot_states_dict, "tomato"))
             elif obj_name == "dish" and "pickup_soup" not in self.excluded_roles:
                 motion_goals += am.pickup_soup_with_dish_actions(
                     pot_states_dict, only_nearly_ready=True
@@ -465,6 +587,11 @@ class RoleRestrictedBot(GreedyHumanModel):
                     # 어설션 실패로 봇 스레드가 죽는 일은 막는다.
                     motion_goals = am.go_to_closest_feature_actions(player)
             else:
+                # 빈손인데 할 일이 없다 → 아래에서 대기(STAY)로 바꾼다. 예전처럼
+                # "가장 가까운 시설로 가서 상호작용"하면, 새 동역학(빈손 상호작용=
+                # 요리 시작) 때문에 일부만 채워진 냄비를 멋대로 조리해 버려
+                # 엉뚱한(0점) 수프가 만들어졌다(혼합 주문 시뮬레이션에서 발견).
+                self._idle_wait = True
                 motion_goals = am.go_to_closest_feature_actions(player)
             motion_goals = [
                 mg for mg in motion_goals

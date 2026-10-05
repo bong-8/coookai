@@ -404,7 +404,11 @@ var LAYOUT_TO_BOT = {
     'asymmetric_advantages': 'RuleBasedBot_AsymmetricAdvantages',
     'coordination_ring': 'RuleBasedBot_CoordinationRing',
     'forced_coordination': 'RuleBasedBot_ForcedCoordination',
-    'counter_circuit': 'RuleBasedBot_CounterCircuit'
+    'counter_circuit': 'RuleBasedBot_CounterCircuit',
+    'cramped_room_mixed': 'RuleBasedBot_CrampedRoom',
+    'asymmetric_advantages_mixed': 'RuleBasedBot_AsymmetricAdvantages',
+    'coordination_ring_mixed': 'RuleBasedBot_CoordinationRing',
+    'forced_coordination_mixed': 'RuleBasedBot_ForcedCoordination'
 };
 
 socket.on("connect", function() {

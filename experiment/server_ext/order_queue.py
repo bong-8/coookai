@@ -29,9 +29,9 @@
 
 주문 순서는 레이아웃 이름으로 시드한 난수로 뽑는다 — 같은 난이도에서는 모든
 참가자가 항상 똑같은 주문 순서를 보게 해서(무작위 순서의 차이가 점수 차이로
-섞이지 않도록) 집단 간 비교의 통제를 높인다. 양파 3개 수프 하나만 허용하는
-4개 레이아웃에서는 어차피 항상 같은 주문이고, 허용 레시피가 3종인
-counter_circuit에서만 의미가 있다.
+섞이지 않도록) 집단 간 비교의 통제를 높인다. 허용 레시피가 1종뿐인
+레이아웃(원본 cramped_room 등)에서는 항상 같은 주문이라 너무 쉬워서,
+실험용 *_mixed 레이아웃(양파+토마토, 4종)을 쓴다(2026-10-05).
 """
 import random
 import time
@@ -60,6 +60,17 @@ class OrderQueueMixin:
         self._next_order_at_sec = ORDER_ARRIVAL_INTERVAL_SEC
         self._order_events = []
         self._order_rng = random.Random(0)
+        self._order_bag = []
+
+    def _draw_recipe(self):
+        """허용 레시피를 "섞은 가방(bag)"에서 하나씩 뽑는다 — 가방이 비면 다시
+        섞어 채움. 그냥 무작위로 뽑으면 같은 메뉴가 연달아 나올 수 있는데
+        (2026-10-05 피드백: 주문이 한 종류뿐이라 너무 쉬움), 가방 방식은 모든
+        종류가 고르게 나오고 시드(레이아웃 이름)가 같으면 순서도 항상 같다."""
+        if not self._order_bag:
+            self._order_bag = list(self._allowed_orders)
+            self._order_rng.shuffle(self._order_bag)
+        return self._order_bag.pop()
 
     # ── 시간 ────────────────────────────────────────────────────────
     def _order_elapsed_sec(self):
@@ -81,9 +92,9 @@ class OrderQueueMixin:
         self._allowed_orders = list(self.state.all_orders)
         layout = getattr(self, "curr_layout", "")
         self._order_rng = random.Random(str(layout))
+        self._order_bag = []
         self._open_orders = [
-            self._order_rng.choice(self._allowed_orders)
-            for _ in range(INITIAL_ORDER_COUNT)
+            self._draw_recipe() for _ in range(INITIAL_ORDER_COUNT)
         ]
         self._next_order_at_sec = ORDER_ARRIVAL_INTERVAL_SEC
         self._order_events = [
@@ -148,7 +159,7 @@ class OrderQueueMixin:
         elapsed = self._order_elapsed_sec()
         # 서버가 잠깐 멈췄다 돌아와도 놓친 주문을 몰아서 보충하도록 while 사용.
         while self._allowed_orders and elapsed >= self._next_order_at_sec:
-            recipe = self._order_rng.choice(self._allowed_orders)
+            recipe = self._draw_recipe()
             self._open_orders.append(recipe)
             self._order_events.append(
                 {"type": "added", "recipe": _recipe_label(recipe),

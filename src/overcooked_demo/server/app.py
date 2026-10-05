@@ -456,6 +456,11 @@ LAYOUT_TO_EXPERIMENT_BOT = {
     "coordination_ring": "RuleBasedBot_CoordinationRing",
     "forced_coordination": "RuleBasedBot_ForcedCoordination",
     "counter_circuit": "RuleBasedBot_CounterCircuit",
+    # 실험용 혼합 주문 레이아웃(2026-10-05) — 지형은 같고 토마토 디스펜서 1개만 추가
+    "cramped_room_mixed": "RuleBasedBot_CrampedRoom",
+    "asymmetric_advantages_mixed": "RuleBasedBot_AsymmetricAdvantages",
+    "coordination_ring_mixed": "RuleBasedBot_CoordinationRing",
+    "forced_coordination_mixed": "RuleBasedBot_ForcedCoordination",
 }
 
 

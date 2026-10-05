@@ -913,3 +913,15 @@ JS 쪽 로직(핑 집계/표 렌더링)은 자동화 테스트가 없음 — **�
 - 확인: 한 게임 객체가 5개 레이아웃을 이어 진행하며 RESET마다/마지막에 `get_data()` → 라운드별 `round<N>_<layout>.pkl` + index.csv 한 줄(Test 26).
 - **발견한 순서 버그**: game.py는 `layouts.pop()`(리스트의 마지막부터)이라 config 순서 그대로면 counter_circuit(가장 어려움)부터 시작했다. app.py `on_join`에서 리스트를 뒤집어 넘겨 config에 적은 순서(cramped_room → … → counter_circuit)대로 진행.
 - 중도 종료: `DataLogMixin.deactivate()`가 남은 trajectory를 `partial=True`로 저장(index.csv에 `partial` 열 추가). 원본은 이 경우 기록이 사라졌다.
+
+## 2026-10-05 (7) 주문 다양화 — 혼합 주문 레이아웃
+
+문제: 원본 레이아웃 5개 중 4개는 토마토 디스펜서가 없고 허용 레시피가 "양파 3개" 하나뿐이라 주문이 항상 같은 수프 → 1분에 거의 항상 최대 점수 도달.
+
+- 새 레이아웃(`src/overcooked_ai_py/data/layouts/*_mixed.layout`; 원본 파일은 그대로): 원본 지형에서 **디스펜서 한 칸만 토마토로 교체/추가**. cramped_room_mixed(오른쪽 양파→토마토), asymmetric_advantages_mixed(위쪽 벽 2칸을 토마토 디스펜서로: 양쪽 주방 모두 양파+토마토), coordination_ring_mixed(왼쪽 양파→토마토), forced_coordination_mixed(봇 구역 양파 하나→토마토). counter_circuit는 원래 혼합이라 그대로.
+- 허용 주문 4종(양파3 / 양파2+토마토1 / 양파1+토마토2 / 토마토3), 점수 20·조리 20틱으로 통일(원본 점수 규모 유지). `config.json` 기본 5판 = cramped_room_mixed → asymmetric_advantages_mixed → coordination_ring_mixed → forced_coordination_mixed → counter_circuit.
+- `order_queue.py`: 주문을 "섞은 가방"에서 뽑음(4종이 고르게, 연속 중복 없이; 레이아웃 이름 시드라 모든 참가자 동일 순서).
+- 봇(`role_restricted_bot.py`): ① 열린 주문 중 "냄비에 이미 담긴 재료로 이어갈 수 있는 가장 오래된 주문"을 목표로 ② 다른 메뉴 재료가 섞이지 않게 맞는 냄비에만 넣고 안 맞으면 카운터에 둠 ③ 파트너가 이미 들고 있는 재료는 또 집지 않음 ④ 열린 주문과 정확히 같은 냄비만 조리 시작 ⑤ 넣을 냄비가 없거나 완성 수프가 기다리면 재료를 집지 않음 ⑥ **빈손으로 할 일이 없으면 대기(STAY)** — 예전엔 "가장 가까운 시설로 가서 상호작용"하다가 새 동역학(빈손 상호작용=요리 시작) 때문에 일부만 찬 냄비를 멋대로 조리해 0점 수프가 만들어질 수 있었음 ⑦ forced 계열 공급자 봇은 필요한 재료(토마토 포함)를 handoff에 공급.
+- 도구: `analysis/simulate_orders.py`(주문 큐 규칙 포함 시뮬레이션). 사람 대용이 좁은 주방에서 서로 길을 막는 한계는 그대로 — 절대 점수 해석 금지.
+- 테스트: Test 28(봇 혼합 주문 처리), Test 29(주문 다양성/기본 5판 구성).
+- 안내 페이지: 주문이 여러 종류이며 재료 구성이 정확히 같아야 점수라는 설명으로 수정.

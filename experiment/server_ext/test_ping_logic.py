@@ -1160,6 +1160,95 @@ def test_human_input_events_tap_hold_release():
 
 
 
+def test_bot_handles_mixed_orders():
+    """Test 28: 혼합 주문(양파/토마토 4종) — 봇이 오래된 주문 기준으로 올바른 재료를
+    고르고, 다른 메뉴 재료를 섞지 않으며, 일부만 찬 냄비를 멋대로 조리하지 않는다."""
+    from collections import defaultdict
+    from overcooked_ai_py.mdp.overcooked_mdp import (
+        OvercookedGridworld, SoupState, ObjectState, Recipe)
+    from overcooked_ai_py.planning.planners import MediumLevelActionManager
+    from experiment.agents.role_restricted_bot import RoleRestrictedBot, build_mlam_params
+
+    mdp = OvercookedGridworld.from_layout_name("cramped_room_mixed")
+    assert mdp.get_tomato_dispenser_locations() and mdp.get_onion_dispenser_locations()
+    mlam = MediumLevelActionManager.from_pickle_or_compute(mdp, build_mlam_params(mdp))
+    bot = RoleRestrictedBot(mlam, excluded_roles=["deliver"]); bot.set_agent_index(1)
+    R = lambda *i: Recipe(list(i))
+    pot = mdp.get_pot_locations()[0]
+    nc = defaultdict(list)
+    od = set(mlam.pickup_onion_actions(nc)); td = set(mlam.pickup_tomato_actions(nc))
+
+    def fresh(held=None, partner_held=None, pot_items=None):
+        st = mdp.get_standard_start_state()
+        for pl in st.players:
+            pl.remove_object() if pl.has_object() else None
+        if held:
+            st.players[1].set_object(ObjectState(held, st.players[1].position))
+        if partner_held:
+            st.players[0].set_object(ObjectState(partner_held, st.players[0].position))
+        if pot_items is not None:
+            st.objects[pot] = SoupState.get_soup(
+                pot, num_onions=pot_items.count("onion"),
+                num_tomatoes=pot_items.count("tomato"))
+        return st
+
+    bot.open_orders = [R("onion", "onion", "tomato")]
+    assert all(g in od for g in bot.ml_action(fresh())), "빈 냄비: 첫 재료(양파)"
+    assert all(g in td for g in bot.ml_action(fresh(pot_items=["onion", "onion"]))), "o,o → 토마토"
+    # 다른 메뉴가 먼저여도 이미 채워진 냄비를 이어갈 수 있는 가장 오래된 주문을 따른다
+    bot.open_orders = [R("tomato", "tomato", "tomato"), R("onion", "onion", "tomato")]
+    st = fresh(pot_items=["onion", "onion"])
+    assert bot._target_order(st) == R("onion", "onion", "tomato")
+    # 파트너가 이미 남은 재료를 들고 있으면 같은 재료를 또 집지 않음
+    bot.open_orders = [R("onion", "onion", "tomato")]
+    st = fresh(partner_held="tomato", pot_items=["onion", "onion"])
+    assert bot._needed_ingredient(st, bot.open_orders[0], mdp.get_pot_states(st)) is None
+    # 들고 있는 재료가 어떤 냄비와도 안 맞으면 넣지 않음(카운터에 내려놓음)
+    bot.open_orders = [R("onion", "onion", "onion")]
+    st = fresh(held="tomato", pot_items=["onion", "onion"])
+    comp = bot._compatible_pots(st, mdp.get_pot_states(st), "tomato")
+    assert not any(comp.get(k) for k in comp), comp
+    # 열린 주문과 정확히 같은 냄비는 조리 시작, 아니면(일부만 찬 냄비) 건드리지 않음
+    bot.open_orders = [R("onion", "onion", "tomato")]
+    st = fresh(pot_items=["onion", "onion", "tomato"])
+    assert bot._pots_ready_to_cook(st, mdp.get_pot_states(st))
+    st = fresh(pot_items=["onion", "onion"])
+    assert not bot._pots_ready_to_cook(st, mdp.get_pot_states(st))
+    print("PASS test_bot_handles_mixed_orders")
+
+
+def test_order_queue_variety_in_mixed_layouts():
+    """Test 29: 혼합 레이아웃은 4종 주문이 고르게 나오고(가방 방식), 같은 레이아웃은
+    항상 같은 순서. 기본 5판 레이아웃이 전부 로드되고 4개가 혼합 주문을 허용한다."""
+    import json, os
+    from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
+    from experiment.server_ext.order_queue import OrderQueueMixin, _recipe_label
+
+    class Q(OrderQueueMixin):
+        def __init__(self, layout):
+            self.mdp = OvercookedGridworld.from_layout_name(layout)
+            self.state = self.mdp.get_standard_start_state()
+            self.curr_layout = layout
+            self.npc_policies = {}
+            self._orders_init(); self._reset_orders()
+
+    q = Q("cramped_room_mixed")
+    seq = [tuple(_recipe_label(q._open_orders[0]))] + [
+        tuple(_recipe_label(q._draw_recipe())) for _ in range(7)]
+    assert len(set(seq[:4])) == 4 and len(set(seq[4:])) == 4, seq   # 4개씩 한 바퀴
+    q2 = Q("cramped_room_mixed")
+    assert [tuple(_recipe_label(r)) for r in q2._open_orders] == [tuple(_recipe_label(q._open_orders[0]))]
+    cfg = json.load(open(os.path.join(os.path.dirname(__file__), "../../src/overcooked_demo/server/config.json")))
+    layouts = cfg["predefined"]["experimentParams"]["layouts"]
+    mixed = 0
+    for lay in layouts:
+        n = len(OvercookedGridworld.from_layout_name(lay).get_standard_start_state().all_orders)
+        mixed += n >= 3
+    assert mixed == 5, (layouts, mixed)
+    print("PASS test_order_queue_variety_in_mixed_layouts")
+
+
+
 if __name__ == "__main__":
     test_unknown_action_still_raises_keyerror()
     test_normal_move_unaffected()
@@ -1190,5 +1279,7 @@ if __name__ == "__main__":
     test_datalog_write_retries_on_permission_error()
     test_datalog_five_rounds_and_partial_on_leave()
     test_human_input_events_tap_hold_release()
+    test_bot_handles_mixed_orders()
+    test_order_queue_variety_in_mixed_layouts()
     test_end_to_end_logging_and_metrics()
     print("Phase 2 전체(핑 채널 + 봇 반응 + 로깅 + 지표 계산) 테스트 통과.")
