@@ -214,12 +214,21 @@ var MOVEMENT_SEND_INTERVAL_MS = 80;  // 서버 10fps(~100ms)보다 살짝 빠르
 // PingReactiveBot._decide_move_aside_action 참고.
 var PING_KEY_TO_TYPE = { 49: 'help', 50: 'move', 51: 'mine', 52: 'ok' };
 
+// (2026-10-05) 입력 방식 변경 — "방향키 반응이 늦어 다시 누르면 2칸 이동" 문제.
+// 예전: 누르는 동안 80ms마다 방향 문자열 반복 전송(첫 입력이 타이머를 기다리고,
+// 톡 눌러도 2번 전송돼 2칸 이동). 지금: 키 눌림/뗌 "사건"을 즉시 전송하고
+// (KEY_DOWN_/KEY_UP_), 누르고 있는 동안은 0.25초마다 하트비트(KEY_HOLD_)만 보낸다.
+// 서버가 틱마다 행동을 정한다 — 자세한 규칙은 experiment/server_ext/human_input.py.
+var KEY_HEARTBEAT_MS = 250;
+
 function enable_key_listener() {
     $(document).on('keydown', function(e) {
         if (MOVE_KEY_TO_ACTION.hasOwnProperty(e.which)) {
             e.preventDefault();
+            if (e.repeat) { return; } // OS 자동 반복 무시(서버가 눌린 상태를 직접 유지)
             if (PRESSED_MOVE_KEYS.indexOf(e.which) === -1) {
                 PRESSED_MOVE_KEYS.push(e.which);
+                socket.emit('action', { 'action': 'KEY_DOWN_' + MOVE_KEY_TO_ACTION[e.which] });
             }
         } else if (e.which === 32) { // space
             e.preventDefault();
@@ -236,21 +245,34 @@ function enable_key_listener() {
     $(document).on('keyup', function(e) {
         if (MOVE_KEY_TO_ACTION.hasOwnProperty(e.which)) {
             let idx = PRESSED_MOVE_KEYS.indexOf(e.which);
-            if (idx !== -1) { PRESSED_MOVE_KEYS.splice(idx, 1); }
+            if (idx !== -1) {
+                PRESSED_MOVE_KEYS.splice(idx, 1);
+                socket.emit('action', { 'action': 'KEY_UP_' + MOVE_KEY_TO_ACTION[e.which] });
+            }
+        }
+    });
+    $(window).on('blur.gamekeys', function() { // 창을 벗어나면 키가 눌린 채 멈추지 않게
+        if (PRESSED_MOVE_KEYS.length > 0) {
+            PRESSED_MOVE_KEYS = [];
+            socket.emit('action', { 'action': 'KEY_UP_ALL' });
         }
     });
     if (movementIntervalId === -1) {
         movementIntervalId = setInterval(function () {
-            if (PRESSED_MOVE_KEYS.length === 0) { return; } // 아무 키도 안 눌렀으면 그냥 둠(서버가 STAY로 처리)
-            let mostRecentKey = PRESSED_MOVE_KEYS[PRESSED_MOVE_KEYS.length - 1];
-            socket.emit('action', { 'action': MOVE_KEY_TO_ACTION[mostRecentKey] });
-        }, MOVEMENT_SEND_INTERVAL_MS);
+            for (let i = 0; i < PRESSED_MOVE_KEYS.length; i++) {
+                socket.emit('action', { 'action': 'KEY_HOLD_' + MOVE_KEY_TO_ACTION[PRESSED_MOVE_KEYS[i]] });
+            }
+        }, KEY_HEARTBEAT_MS);
     }
 };
 
 function disable_key_listener() {
     $(document).off('keydown');
     $(document).off('keyup');
+    $(window).off('blur.gamekeys');
+    if (PRESSED_MOVE_KEYS.length > 0) {
+        socket.emit('action', { 'action': 'KEY_UP_ALL' });
+    }
     if (movementIntervalId !== -1) {
         clearInterval(movementIntervalId);
         movementIntervalId = -1;

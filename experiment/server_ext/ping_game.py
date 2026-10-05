@@ -275,12 +275,14 @@ def build_ping_enabled_game_class(overcooked_game_cls):
     # 새로 만든 "뒤에" 주문 목록을 초기화하고 mdp.deliver_soup을 감싼다.
     from experiment.server_ext.order_queue import OrderQueueMixin
     from experiment.server_ext.data_log import DataLogMixin
+    from experiment.server_ext.human_input import HumanInputMixin
 
-    class PingEnabledGame(DataLogMixin, OrderQueueMixin, PingMixin, overcooked_game_cls):
+    class PingEnabledGame(HumanInputMixin, DataLogMixin, OrderQueueMixin, PingMixin, overcooked_game_cls):
         def __init__(self, *args, **kwargs):
             super(PingEnabledGame, self).__init__(*args, **kwargs)
             self._ping_init()
             self._orders_init()
             self._datalog_init()
+            self._input_init()
 
     return PingEnabledGame

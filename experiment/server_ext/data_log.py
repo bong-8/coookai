@@ -98,6 +98,21 @@ class DataLogMixin:
         if self._session_started is None:
             self._session_started = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    def deactivate(self):
+        # 참가자가 중간에 나가거나 탭을 닫으면(원본은 이때 get_data를 안 불러
+        # 진행하던 라운드 기록이 통째로 사라졌다) 남아 있는 trajectory를 "중도
+        # 종료(partial)" 표시로 저장한다. 정상 종료 때는 이미 get_data가
+        # trajectory를 비운 뒤라 중복 저장되지 않는다.
+        if getattr(self, "trajectory", None):
+            self._partial_round = True
+            try:
+                self.get_data()
+            except Exception as e:
+                print(f"[data_log] 중도 종료 라운드 저장 실패: {e!r}")
+            finally:
+                self._partial_round = False
+        super(DataLogMixin, self).deactivate()
+
     def _nicknames_by_index(self):
         out = {}
         for idx, pid in enumerate(self.players):
@@ -116,6 +131,7 @@ class DataLogMixin:
             "session_started": self._session_started,
             "players": list(self.players),
             "game_time_sec": getattr(self, "max_time", None),
+            "partial": bool(getattr(self, "_partial_round", False)),
         }
         cfg = getattr(self, "write_config", None) or {}
         meta["game_type"] = cfg.get("type")
@@ -192,7 +208,7 @@ class DataLogMixin:
             w = csv.writer(f)
             if new_file:
                 w.writerow(["saved_at", "session_started", "game_type", "round",
-                            "layout", "nicknames", "final_score", "steps", "file"])
+                            "layout", "nicknames", "final_score", "steps", "partial", "file"])
             w.writerow([
                 datetime.now().isoformat(timespec="seconds"),
                 self._session_started,
@@ -202,5 +218,6 @@ class DataLogMixin:
                 "|".join(data["nicknames"].values()),
                 last.get("score"),
                 len(data["trajectory"]),
+                int(data["meta"].get("partial", False)),
                 str(path),
             ])

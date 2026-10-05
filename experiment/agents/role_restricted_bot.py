@@ -53,6 +53,12 @@ def build_mlam_params(mdp):
 # 봇이 못 서빙하고 카운터에 수프/접시만 쌓다가 자리가 없어지면 막힌다).
 DELIVER_WHEN_FREE_COUNTERS_AT_MOST = 1
 
+# (2026-10-05 피드백: "봇도 그냥 제출할 수 있으면 제출하자") True면 저장된
+# excluded_roles에 "deliver"가 있어도(기존 agent.pickle 5개) 봇이 평소에도
+# 수프를 직접 서빙한다. pickle을 다시 만들 필요 없이 이 값 하나로 제어.
+# 예외: "내가 할게" 핑 효과 중에는 서빙을 사람 몫으로 남긴다(_deliver_blocked_by_ping).
+BOT_MAY_DELIVER = True
+
 
 def _ingredient_names(recipe_like):
     """Recipe/SoupState 비슷한 객체에서 재료 이름 리스트를 뽑는다."""
@@ -365,6 +371,13 @@ class RoleRestrictedBot(GreedyHumanModel):
         empty = set(self.mlam.mdp.get_empty_counter_locations(state))
         return len([c for c in self.mlam.counter_drop if c in empty])
 
+    def _deliver_allowed(self, state):
+        if "deliver" not in self.excluded_roles:
+            return True
+        if BOT_MAY_DELIVER and not getattr(self, "_deliver_blocked_by_ping", False):
+            return True
+        return self._free_counter_count(state) <= DELIVER_WHEN_FREE_COUNTERS_AT_MOST
+
     def ml_action(self, state):
         # 부모 클래스가 어떤 액션 카테고리에서 목표를 만들었는지 알 수 없으므로,
         # 카테고리별로 직접 재계산 후 제외 목록을 뺀 나머지만 합쳐서 반환한다.
@@ -410,11 +423,7 @@ class RoleRestrictedBot(GreedyHumanModel):
                 motion_goals += am.pickup_soup_with_dish_actions(
                     pot_states_dict, only_nearly_ready=True
                 )
-            elif obj_name == "soup" and (
-                "deliver" not in self.excluded_roles
-                or self._free_counter_count(state)
-                <= DELIVER_WHEN_FREE_COUNTERS_AT_MOST
-            ):
+            elif obj_name == "soup" and self._deliver_allowed(state):
                 motion_goals += am.deliver_soup_actions()
 
         motion_goals = [
@@ -851,11 +860,13 @@ class PingReactiveBot(RoleRestrictedBot):
         else:
             self.excluded_roles = saved_roles | {"deliver"}
             self._goal_bias = ("far", sender_pos)
+            self._deliver_blocked_by_ping = True
         try:
             return super().action(state)
         finally:
             self.excluded_roles = saved_roles
             self._goal_bias = None
+            self._deliver_blocked_by_ping = False
 
     def choose_motion_goal(self, start_pos_and_or, motion_goals):
         """도와줘/내가 할게 효과 중이면, 봇 자신과의 거리 대신 '핑을 보낸 사람과의

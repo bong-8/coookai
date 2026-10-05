@@ -648,6 +648,14 @@ def on_join(data):
             # No available game was found so create a game
             params = data.get("params", {})
             creation_params(params)
+            # (2026-10-05) game.py는 self.layouts.pop()으로 "리스트의 마지막"부터
+            # 꺼낸다(원본 tutorial 설정이 ["tutorial_3",...,"tutorial_0"]처럼
+            # 거꾸로 적혀 있는 이유). 그런데 config.json의 experimentParams.layouts는
+            # 쉬운 것→어려운 것 순으로 적혀 있어, 그대로 두면 5판 연속 실행 시
+            # counter_circuit(가장 어려운 판)부터 시작했다. 적힌 순서대로 진행되게
+            # 여기서 뒤집어 넘긴다.
+            if isinstance(params.get("layouts"), list) and len(params["layouts"]) > 1:
+                params["layouts"] = list(reversed(params["layouts"]))
             game_name = data.get("game_name", "overcooked")
             _create_game(user_id, game_name, params, nickname=data.get("nickname"))
             return

@@ -430,6 +430,16 @@ def test_goal_choice_by_distance_from_sender():
 
 
 def test_bot_drops_undeliverable_soup_on_counter_instead_of_stalling():
+    import experiment.agents.role_restricted_bot as _rrb
+    _saved_flag = _rrb.BOT_MAY_DELIVER
+    _rrb.BOT_MAY_DELIVER = False  # 이 테스트는 '서빙 제한 봇'의 안전장치 검증용
+    try:
+        _body_13()
+    finally:
+        _rrb.BOT_MAY_DELIVER = _saved_flag
+
+
+def _body_13():
     print("=== Test 13: excluded_roles=['deliver']인 채로 완성된 수프를 들면, "
           "배달 대신 카운터에 내려놓고 멈추지 않는지 (실제 플레이테스트에서 "
           "'접시를 든 채 그대로 고장난다'는 피드백으로 발견된 버그의 회귀 방지) ===")
@@ -891,12 +901,19 @@ def test_bot_delivers_when_counters_full_and_follows_oldest_order():
     st = mdp.get_standard_start_state()
     st.players[0].set_object(SoupState.get_soup(st.players[0].position, num_onions=3, finished=True))
     serve = set(mlam.deliver_soup_actions())
-    assert not any(g in serve for g in bot.ml_action(st)), "자리 여유가 있으면 서빙 안 함"
-    empt = [c for c in mlam.counter_drop if c in set(mdp.get_empty_counter_locations(st))]
-    for c in empt[:-1]:
-        st.add_object(ObjectState("dish", c))
-    assert bot._free_counter_count(st) == 1
-    assert all(g in serve for g in bot.ml_action(st)), "빈 자리 1개면 서빙"
+    import experiment.agents.role_restricted_bot as _rrb
+    assert _rrb.BOT_MAY_DELIVER is True
+    assert all(g in serve for g in bot.ml_action(st)), "BOT_MAY_DELIVER=True면 항상 서빙"
+    _rrb.BOT_MAY_DELIVER = False
+    try:
+        assert not any(g in serve for g in bot.ml_action(st)), "(제한 모드) 자리 여유가 있으면 서빙 안 함"
+        empt = [c for c in mlam.counter_drop if c in set(mdp.get_empty_counter_locations(st))]
+        for c in empt[:-1]:
+            st.add_object(ObjectState("dish", c))
+        assert bot._free_counter_count(st) == 1
+        assert all(g in serve for g in bot.ml_action(st)), "빈 자리 1개면 서빙"
+    finally:
+        _rrb.BOT_MAY_DELIVER = True
 
     mdp2 = OvercookedGridworld.from_layout_name("counter_circuit")
     mlam2 = MediumLevelActionManager.from_pickle_or_compute(mdp2, build_mlam_params(mdp2))
@@ -1034,6 +1051,115 @@ def test_datalog_write_retries_on_permission_error():
     print("PASS test_datalog_write_retries_on_permission_error")
 
 
+def test_datalog_five_rounds_and_partial_on_leave():
+    """Test 26: 5판 연속(기본 설정) — 라운드마다 파일/인덱스 줄이 따로 남고,
+    중간에 나가면(deactivate) 진행 중이던 라운드가 partial로 저장된다."""
+    import csv, os, pickle, tempfile, glob
+    from experiment.server_ext.data_log import DataLogMixin, ENV_DATA_DIR
+
+    layouts = ["cramped_room", "asymmetric_advantages", "coordination_ring",
+               "forced_coordination", "counter_circuit"]
+
+    class _Base:
+        def __init__(self):
+            self.players = ["sidA", "bot"]
+            self.human_players = {"sidA"}
+            self.trajectory = []
+            self.write_data = True
+            self.write_config = {"type": "HA"}
+            self.max_time = 60
+            self.deactivated = False
+        def activate(self):
+            pass
+        def deactivate(self):
+            self.deactivated = True
+    class _G(DataLogMixin, _Base):
+        pass
+
+    tmp = tempfile.mkdtemp()
+    old = os.environ.get(ENV_DATA_DIR)
+    os.environ[ENV_DATA_DIR] = tmp
+    try:
+        g = _G(); g._datalog_init(); g.activate(); g.set_nickname("sidA", "길동")
+        for i, lay in enumerate(layouts[:4]):   # 4판 정상 종료(RESET 경로)
+            g.trajectory = [{"layout_name": lay, "score": 20 * (i + 1)}] * 3
+            g.get_data()
+        g.trajectory = [{"layout_name": layouts[4], "score": 7}] * 2   # 5번째 판 도중 이탈
+        g.deactivate()
+        assert g.deactivated and g.trajectory == []
+        files = sorted(glob.glob(os.path.join(tmp, "*", "round*.pkl")))
+        assert len(files) == 5, files
+        assert len({os.path.dirname(f) for f in files}) == 1, "한 세션은 한 폴더"
+        rows = list(csv.reader(open(os.path.join(tmp, "index.csv"), encoding="utf-8-sig")))
+        assert len(rows) == 6 and rows[0][-2] == "partial"
+        assert [r[4] for r in rows[1:]] == layouts
+        assert [r[-2] for r in rows[1:]] == ["0", "0", "0", "0", "1"]
+        last = pickle.load(open(files[-1], "rb"))
+        assert last["meta"]["partial"] is True and last["nicknames"]["0"] == "길동"
+        g.deactivate()  # 이미 비어 있으면 중복 저장 없음
+        assert len(glob.glob(os.path.join(tmp, "*", "round*.pkl"))) == 5
+    finally:
+        if old is None: os.environ.pop(ENV_DATA_DIR, None)
+        else: os.environ[ENV_DATA_DIR] = old
+    print("PASS test_datalog_five_rounds_and_partial_on_leave")
+
+
+def test_human_input_events_tap_hold_release():
+    """Test 27: 톡 누르면 정확히 1칸, 누르고 있으면 틱마다, 떼면 즉시 멈춤,
+    SPACE가 방향키에 덮이지 않음, 유실된 KEY_UP은 타임아웃으로 해제."""
+    import time as _t
+    from experiment.server_ext.human_input import HumanInputMixin, HOLD_TIMEOUT_SEC
+
+    class G(HumanInputMixin, PingMixin, FakeOvercookedGame):
+        pass
+
+    def make():
+        g = G(["h", "bot_1"]); g._ping_init(); g._input_init(); return g
+
+    def acts(g, n):
+        out = []
+        for _ in range(n):
+            tr = g.tick()
+            out.append(json.loads(tr["joint_action"])["h"])
+        return out
+
+    g = make()                                    # 1) 톡(눌렀다 곧바로 뗌) → 1틱만
+    g.enqueue_action("h", "KEY_DOWN_LEFT"); g.enqueue_action("h", "KEY_UP_LEFT")
+    assert acts(g, 3) == ["LEFT", "STAY", "STAY"]
+    g = make()                                    # 2) 누르고 있음 → 매 틱, 뗌 → 바로 멈춤
+    g.enqueue_action("h", "KEY_DOWN_UP")
+    assert acts(g, 4) == ["UP"] * 4
+    g.enqueue_action("h", "KEY_HOLD_UP")
+    assert acts(g, 1) == ["UP"]
+    g.enqueue_action("h", "KEY_UP_UP")
+    assert acts(g, 2) == ["STAY", "STAY"]
+    g = make()                                    # 3) 방향키 직후 SPACE: 둘 다 처리(순서 보존)
+    g.enqueue_action("h", "KEY_DOWN_RIGHT"); g.enqueue_action("h", "KEY_UP_RIGHT")
+    g.enqueue_action("h", "SPACE")
+    assert acts(g, 3) == ["RIGHT", "SPACE", "STAY"]
+    g = make()                                    # 4) 두 키: 가장 최근 키 우선, 떼면 이전 키로
+    g.enqueue_action("h", "KEY_DOWN_LEFT"); g.enqueue_action("h", "KEY_DOWN_UP")
+    assert acts(g, 3) == ["LEFT", "UP", "UP"]
+    g.enqueue_action("h", "KEY_UP_UP")
+    assert acts(g, 2) == ["LEFT", "LEFT"]
+    g.enqueue_action("h", "KEY_UP_ALL")
+    assert acts(g, 1) == ["STAY"]
+    g = make()                                    # 5) KEY_UP 유실 → 하트비트 끊기면 자동 해제
+    g.enqueue_action("h", "KEY_DOWN_DOWN")
+    assert acts(g, 2) == ["DOWN", "DOWN"]
+    g._hi_held["h"]["DOWN"] -= HOLD_TIMEOUT_SEC + 0.1
+    assert acts(g, 1) == ["STAY"]
+    g = make()                                    # 6) 이벤트가 무한히 쌓이지 않음 / 구 방식 호환
+    for _ in range(50):
+        g.enqueue_action("h", "SPACE")
+    assert len(g._hi_events["h"]) <= 3
+    g = make(); g.enqueue_action("h", "LEFT")      # 구 방식 문자열
+    assert acts(g, 1) == ["LEFT"]
+    g.enqueue_action("bot_1", "UP")                # NPC 쪽 경로는 그대로
+    print("PASS test_human_input_events_tap_hold_release")
+
+
+
 if __name__ == "__main__":
     test_unknown_action_still_raises_keyerror()
     test_normal_move_unaffected()
@@ -1062,5 +1188,7 @@ if __name__ == "__main__":
     test_build_class_instantiates_with_all_mixins()
     test_forced_layout_supplier_role_and_safety_net()
     test_datalog_write_retries_on_permission_error()
+    test_datalog_five_rounds_and_partial_on_leave()
+    test_human_input_events_tap_hold_release()
     test_end_to_end_logging_and_metrics()
     print("Phase 2 전체(핑 채널 + 봇 반응 + 로깅 + 지표 계산) 테스트 통과.")
