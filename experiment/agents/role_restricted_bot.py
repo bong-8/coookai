@@ -48,6 +48,18 @@ def build_mlam_params(mdp):
     return params
 
 
+# 카운터(내려놓을 빈 자리)가 이 개수 이하로 남으면, 봇이 평소 제외된
+# "deliver" 역할이어도 들고 있는 수프를 직접 서빙한다(2026-10-05 피드백:
+# 봇이 못 서빙하고 카운터에 수프/접시만 쌓다가 자리가 없어지면 막힌다).
+DELIVER_WHEN_FREE_COUNTERS_AT_MOST = 1
+
+
+def _ingredient_names(recipe_like):
+    """Recipe/SoupState 비슷한 객체에서 재료 이름 리스트를 뽑는다."""
+    ings = recipe_like.ingredients
+    return [getattr(i, "name", i) for i in ings]
+
+
 # ── Phase 1: 역할 제한 ──────────────────────────────────────────────
 class RoleRestrictedBot(GreedyHumanModel):
     """
@@ -195,6 +207,45 @@ class RoleRestrictedBot(GreedyHumanModel):
         )
         self.mdp = mdp
 
+    def _target_order(self, state):
+        """봇이 만들 수프 = '아직 목록에서 삭제되지 않은 주문 중 가장 먼저 추가된 것'.
+        게임(OrderQueueMixin)이 매 틱 self.open_orders를 갱신해 준다. 주문
+        목록이 비어 있거나(모두 처리) 이 속성이 없으면(구형 pickle/단위 테스트)
+        레이아웃의 허용 레시피 첫 번째로 대체한다. getattr: pickle.load는
+        __init__을 다시 안 돌리므로 속성이 없을 수 있다."""
+        orders = getattr(self, "open_orders", None)
+        if orders:
+            return orders[0]
+        return list(state.all_orders)[0]
+
+    def _needed_ingredient(self, state, target, pot_states_dict):
+        """지금 들고 올 재료: 일부 채워진 냄비가 있으면 target과 비교해 모자란
+        재료, 없으면 target의 첫 재료(양파 우선)."""
+        want = list(_ingredient_names(target))
+        for key, positions in pot_states_dict.items():
+            if not key.endswith("_items") or key == "empty":
+                continue
+            n = int(key.split("_")[0])
+            if n >= len(want):
+                continue  # 이미 다 찬 냄비는 조리 시작 대상
+            for pos in positions:
+                have = _ingredient_names(state.get_object(pos))
+                remaining = list(want)
+                ok = True
+                for h in have:
+                    if h in remaining:
+                        remaining.remove(h)
+                    else:
+                        ok = False
+                        break
+                if ok and remaining:
+                    return "onion" if "onion" in remaining else remaining[0]
+        return "onion" if "onion" in want else want[0]
+
+    def _free_counter_count(self, state):
+        empty = set(self.mlam.mdp.get_empty_counter_locations(state))
+        return len([c for c in self.mlam.counter_drop if c in empty])
+
     def ml_action(self, state):
         # 부모 클래스가 어떤 액션 카테고리에서 목표를 만들었는지 알 수 없으므로,
         # 카테고리별로 직접 재계산 후 제외 목록을 뺀 나머지만 합쳐서 반환한다.
@@ -215,14 +266,21 @@ class RoleRestrictedBot(GreedyHumanModel):
                 if ready or cooking:
                     motion_goals += am.pickup_dish_actions(counter_objects)
             if "start_cooking" not in self.excluded_roles:
-                next_order = list(state.all_orders)[0]
+                next_order = self._target_order(state)
                 key = "{}_items".format(len(next_order.ingredients))
                 if pot_states_dict.get(key):
                     only = defaultdict(list)
                     only[key] = pot_states_dict[key]
                     motion_goals += am.start_cooking_actions(only)
             if "pickup_onion" not in self.excluded_roles:
-                motion_goals += am.pickup_onion_actions(counter_objects)
+                # 만들 수프(가장 오래된 열린 주문)에 필요한 재료만 집는다.
+                need = self._needed_ingredient(
+                    state, self._target_order(state), pot_states_dict
+                )
+                if need == "tomato":
+                    motion_goals += am.pickup_tomato_actions(counter_objects)
+                else:
+                    motion_goals += am.pickup_onion_actions(counter_objects)
         else:
             obj_name = player.get_object().name
             if obj_name == "onion" and "put_in_pot" not in self.excluded_roles:
@@ -233,7 +291,11 @@ class RoleRestrictedBot(GreedyHumanModel):
                 motion_goals += am.pickup_soup_with_dish_actions(
                     pot_states_dict, only_nearly_ready=True
                 )
-            elif obj_name == "soup" and "deliver" not in self.excluded_roles:
+            elif obj_name == "soup" and (
+                "deliver" not in self.excluded_roles
+                or self._free_counter_count(state)
+                <= DELIVER_WHEN_FREE_COUNTERS_AT_MOST
+            ):
                 motion_goals += am.deliver_soup_actions()
 
         motion_goals = [
@@ -270,6 +332,10 @@ class RoleRestrictedBot(GreedyHumanModel):
         if len(motion_goals) == 0:
             if player.has_object():
                 motion_goals = am.place_obj_on_counter_actions(state)
+                if not motion_goals:
+                    # 내려놓을 빈 카운터도 없으면(가득 참) 예전 동작으로 대체해
+                    # 어설션 실패로 봇 스레드가 죽는 일은 막는다.
+                    motion_goals = am.go_to_closest_feature_actions(player)
             else:
                 motion_goals = am.go_to_closest_feature_actions(player)
             motion_goals = [

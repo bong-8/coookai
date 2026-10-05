@@ -176,3 +176,5 @@ node_modules/
 
 # Ignore copied overcooked_ai directory in server
 src/overcooked_demo/server/overcooked_ai/
+# 게임 로그(참가자 닉네임 포함) — git에 올리지 않음
+data/game_logs/

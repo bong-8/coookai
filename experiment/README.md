@@ -838,3 +838,28 @@ JS 쪽 로직(핑 집계/표 렌더링)은 자동화 테스트가 없음 — **�
   `.gitignore`되어 있어 팀원 간에 공유되지 않습니다. mlam 파라미터를 바꿀
   때마다(2026-10-04의 `counter_drop` 변경처럼) 각자 로컬에서 자동
   재계산되며, 레이아웃이 클수록(counter_circuit) 오래 걸릴 수 있습니다.
+
+## 2026-10-05 (3) 주문 목록 방식 / 한글 게임 방법 / 닉네임 + 로그 저장 경로
+
+### 주문 목록 (`server_ext/order_queue.py`, `OrderQueueMixin`)
+- 시작 시 주문 1개, 이후 10초마다 1개 추가(만료 없음). 목록에 있는 수프를 서빙하면 점수 + 그 주문 1개 삭제, 목록에 없으면 0점.
+- 상수: `ORDER_ARRIVAL_INTERVAL_SEC=10`, `INITIAL_ORDER_COUNT=1`. 주문 순서는 레이아웃 이름으로 시드 → 같은 난이도에선 모든 참가자가 동일한 주문열.
+- 원본 `OvercookedState.all_orders`는 건드리지 않음(목록이 비면 "전부 허용"으로 폴백되는 문제). 열린 주문은 게임 객체가 보관하고 `mdp.deliver_soup`를 감싸 보상 계산, `get_state()`로 HUD("주문 목록:")에 전달.
+- 로그: trajectory 각 스텝에 `open_orders`, `order_events`(initial/added/delivered/rejected).
+- 알려진 한계: 봇의 요리 선택은 정적 `state.all_orders[0]` 기준이라 counter_circuit에선 열린 주문과 어긋날 수 있음.
+
+### 게임 방법 페이지
+- `templates/instructions.html`을 한글로 전면 재작성(구현 기준: 방향키/스페이스, 주문 규칙, 핑 4종과 봇 반응, 봇은 서빙 안 함·1/3 속도, 60초). 시작 화면 문구의 "이거 봐"→"비켜줘" 정정.
+
+### 닉네임 + 로그 (`server_ext/data_log.py`, `DataLogMixin`)
+- 시작 화면에서 닉네임 필수(최대 20자). join 이벤트의 최상위 `nickname`으로 전달 → `game.set_nickname(sid, nick)`.
+- 원본 `get_data()`를 오버라이드(반환 계약 동일). 저장 위치: 환경변수 `OVERCOOKED_DATA_DIR`, 없으면 `<저장소>/data/game_logs` (서버 시작 시 콘솔에 출력, `.gitignore` 등록).
+- 구조: `<폴더>/<시작시각>_<HH|HA>_<닉네임>/round<N>_<레이아웃>.pkl` + `<폴더>/index.csv`. pkl = `{uid, trajectory, nicknames{0,1}, meta{...}}`.
+- Windows에서 경로 변경: `set OVERCOOKED_DATA_DIR=D:\logs` 후 같은 창에서 `python app.py`.
+- 다음 작업: `compute_metrics.py`를 이 폴더 구조/닉네임에 맞게 연결.
+
+## 2026-10-05 (4) 봇 서빙 허용(자리 부족) / 봇이 만들 수프 = 가장 오래된 열린 주문
+- `DELIVER_WHEN_FREE_COUNTERS_AT_MOST = 1` (`role_restricted_bot.py`): 내려놓을 빈 카운터가 1개 이하이면 `deliver`가 제외된 봇도 들고 있는 수프를 직접 서빙. 카운터가 가득 차 봇이 어설션으로 죽던 경우도 방어(내려놓을 곳 없으면 예전 fallback).
+- `RoleRestrictedBot._target_order()`: 게임(`OrderQueueMixin._sync_orders_to_bots`)이 매 틱 NPC에 `open_orders`를 넣어 주고, 봇은 목록의 첫 번째(=가장 먼저 추가된 미처리 주문)를 만든다. 재료도 그 주문 기준으로 양파/토마토를 고름(냄비에 일부 들어 있으면 모자란 재료). 주문이 비면 레이아웃 허용 목록 첫 번째로 대체. agent.pickle 재생성 불필요(속성은 getattr).
+- Test 22 추가.
+- `data/game_logs` 폴더는 수정본을 적용하고 서버를 한 번 띄워야(시작 시 자동 생성) 생김.

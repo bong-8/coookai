@@ -454,7 +454,7 @@ class OvercookedScene extends Phaser.Scene {
 
     _drawBonusOrders(orders, sprites, board_height) {
         if (typeof(orders) !== 'undefined' && orders !== null) {
-            let orders_str = "Bonus Orders: ";
+            let orders_str = "보너스: ";
             if (typeof(sprites['bonus_orders']) !== 'undefined') {
                 // Clear existing orders
                 sprites['bonus_orders']['orders'].forEach(element => {
@@ -494,7 +494,7 @@ class OvercookedScene extends Phaser.Scene {
 
     _drawAllOrders(orders, sprites, board_height) {
         if (typeof(orders) !== 'undefined' && orders !== null) {
-            let orders_str = "All Orders: ";
+            let orders_str = "주문 목록: ";  // 2026-10-05: 서버가 "지금 열려 있는 주문"만 내려줌(order_queue.py)
             if (typeof(sprites['all_orders']) !== 'undefined') {
                 // Clear existing orders
                 sprites['all_orders']['orders'].forEach(element => {

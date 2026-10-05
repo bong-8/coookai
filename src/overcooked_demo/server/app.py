@@ -327,7 +327,14 @@ def _leave_game(user_id):
     return was_active
 
 
-def _create_game(user_id, game_name, params={}):
+def _record_nickname(game, user_id, nickname):
+    """참가자 닉네임을 게임 로그용으로 기록(experiment/server_ext/data_log.py).
+    구형 게임 클래스(믹스인 없음)면 조용히 무시."""
+    if nickname and hasattr(game, "set_nickname"):
+        game.set_nickname(user_id, nickname)
+
+
+def _create_game(user_id, game_name, params={}, nickname=None):
     game, err = try_create_game(game_name, **params)
     if not game:
         emit("creation_failed", {"error": err.__repr__()})
@@ -350,6 +357,7 @@ def _create_game(user_id, game_name, params={}):
             # (block=True 기본값이라) 다음 틱이 그 자리를 비울 때까지 잠깐 대기하므로,
             # 큐 길이가 항상 최대 1로 저절로 제한되고 입력이 밀려 쌓이는 일이 없다.
             game.add_player(user_id, buff_size=1)
+            _record_nickname(game, user_id, nickname)
         else:
             spectating = True
             game.add_spectator(user_id)
@@ -641,7 +649,7 @@ def on_join(data):
             params = data.get("params", {})
             creation_params(params)
             game_name = data.get("game_name", "overcooked")
-            _create_game(user_id, game_name, params)
+            _create_game(user_id, game_name, params, nickname=data.get("nickname"))
             return
 
         elif not game:
@@ -656,6 +664,7 @@ def on_join(data):
                 # 두 번째 참가자(on_join 경로)로 들어오는 human에도 똑같이 적용해야
                 # 입력 큐 무제한 누적 버그가 생기지 않는다.
                 game.add_player(user_id, buff_size=1)
+                _record_nickname(game, user_id, data.get("nickname"))
 
                 if game.is_ready():
                     # Game is ready to begin play
@@ -791,6 +800,12 @@ if __name__ == "__main__":
 
     # Attach exit handler to ensure graceful shutdown
     atexit.register(on_exit)
+
+    # 게임 로그 저장 위치를 시작 때 한 번 보여주고 폴더를 미리 만든다.
+    from experiment.server_ext.data_log import resolve_log_dir
+    _log_dir = resolve_log_dir()
+    os.makedirs(_log_dir, exist_ok=True)
+    print(f"[data_log] 게임 로그 저장 폴더: {_log_dir}")
 
     # https://localhost:80 is external facing address regardless of build environment
     socketio.run(app, host=host, port=port, log_output=app.config["DEBUG"])

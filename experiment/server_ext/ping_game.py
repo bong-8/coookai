@@ -265,9 +265,17 @@ def build_ping_enabled_game_class(overcooked_game_cls):
     인자로 받아서, app.py가 쓰는 것과 항상 같은 모듈 인스턴스를 base로 쓴다.
     """
 
-    class PingEnabledGame(PingMixin, overcooked_game_cls):
+    # 주문 큐(order_queue.py)와 핑 채널(PingMixin)은 서로 독립적인 믹스인이다.
+    # OrderQueueMixin을 앞에 둬서, activate() 때 원본 activate()가 mdp/state를
+    # 새로 만든 "뒤에" 주문 목록을 초기화하고 mdp.deliver_soup을 감싼다.
+    from experiment.server_ext.order_queue import OrderQueueMixin
+    from experiment.server_ext.data_log import DataLogMixin
+
+    class PingEnabledGame(DataLogMixin, OrderQueueMixin, PingMixin, overcooked_game_cls):
         def __init__(self, *args, **kwargs):
             super(PingEnabledGame, self).__init__(*args, **kwargs)
             self._ping_init()
+            self._orders_init()
+        self._datalog_init()
 
     return PingEnabledGame

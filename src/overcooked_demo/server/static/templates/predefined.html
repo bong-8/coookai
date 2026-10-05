@@ -37,8 +37,13 @@
             ← ↑ → ↓ 방향키로 이동, <span style="color:#1E6A9E">스페이스바</span>로 상호작용(재료 줍기/놓기/요리 시작/접시 서빙)
         </p>
         <p>
-            화면 하단의 버튼(도와줘 / 이거 봐 / 내가 할게 / OK)으로 상대에게 간단한 의사를 전달할 수 있습니다.
+            화면 하단의 버튼(도와줘 / 비켜줘 / 내가 할게 / OK, 숫자키 1~4)으로 상대에게 간단한 의사를 전달할 수 있습니다.
         </p>
+        <div class="form-group" style="max-width: 320px; margin: 0 auto 18px;">
+            <label for="nickname-input"><b>닉네임</b> (필수 — 게임 기록에 이 이름이 저장됩니다)</label>
+            <input type="text" id="nickname-input" class="form-control text-center" maxlength="20" placeholder="예: 홍길동 또는 P01" autocomplete="off">
+            <small id="nickname-error" style="display:none; color:#c00;">닉네임을 입력해 주세요.</small>
+        </div>
         <p>
             <a href="./instructions" target="_blank">게임 방법 자세히 보기</a>
         </p>

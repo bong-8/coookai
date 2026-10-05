@@ -404,6 +404,14 @@ $(function() {
 // join을 보낸다 (안내 화면 참고: static/templates/predefined.html의 #start-screen).
 $(function() {
     $('#start-btn').click(function () {
+        // 닉네임 필수 — 게임 로그에 이 이름이 남는다(서버 data_log.py).
+        let nickname = ($('#nickname-input').val() || '').trim();
+        if (!nickname) {
+            $('#nickname-error').show();
+            $('#nickname-input').focus();
+            return;
+        }
+        $('#nickname-error').hide();
         $('#start-screen').hide();
         $('#overcooked-container').show();
 
@@ -438,7 +446,8 @@ $(function() {
 
         let data = {
             "params" : params,
-            "game_name" : "overcooked"
+            "game_name" : "overcooked",
+            "nickname" : nickname
         };
 
         // create (or join if it exists) new game

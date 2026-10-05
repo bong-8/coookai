@@ -679,6 +679,78 @@ def test_speed_throttle_survives_pickle_without_tick_counter():
           "동작, getattr로 0부터 다시 셈)\n")
 
 
+def test_order_queue_add_deliver_reject():
+    print("=== Test 20: 주문 큐 — 시작 시 1개, 10초마다 1개 추가, 배달하면 점수+삭제, "
+          "목록에 없으면 0점(목록이 비어도 '아무거나 점수'로 폴백하지 않음), "
+          "화면 출력/로그 반영 (2026-10-05) ===")
+    import time as _time
+    from overcooked_ai_py.mdp.overcooked_mdp import SoupState
+    from experiment.server_ext.order_queue import (
+        OrderQueueMixin, ORDER_ARRIVAL_INTERVAL_SEC, INITIAL_ORDER_COUNT,
+    )
+
+    class _Base:
+        def __init__(self):
+            self.trajectory = []
+            self.layouts = ["cramped_room"]
+
+        def activate(self):
+            self.curr_layout = self.layouts.pop()
+            self.mdp = OvercookedGridworld.from_layout_name(self.curr_layout)
+            self.state = self.mdp.get_standard_start_state()
+            self.start_time = _time.time()
+
+        def apply_actions(self):
+            self.trajectory.append({})
+
+        def get_state(self):
+            return {"state": self.state.to_dict(), "score": 0}
+
+    class _Game(OrderQueueMixin, _Base):
+        def __init__(self):
+            super().__init__()
+            self._orders_init()
+
+    g = _Game()
+    g.activate()
+    assert len(g._open_orders) == INITIAL_ORDER_COUNT == 1
+    assert len(g.get_state()["state"]["all_orders"]) == 1, "화면에는 열린 주문만 나가야 함"
+
+    def deliver():
+        st = g.state.deepcopy()
+        p = st.players[0]
+        soup = SoupState.get_soup(p.position, num_onions=3, num_tomatoes=0, finished=True)
+        p.set_object(soup)
+        return g.mdp.deliver_soup(st, p, soup), p
+
+    r, player = deliver()
+    assert r == 20 and not player.has_object(), (r, player.has_object())
+    assert len(g._open_orders) == 0, "배달하면 그 주문이 목록에서 삭제돼야 함"
+    assert g.get_state()["state"]["all_orders"] == []
+
+    r, _ = deliver()
+    assert r == 0, "목록이 비었을 때 배달하면 0점이어야 함(ALL_RECIPES 폴백 금지)"
+
+    # 10초마다 1개씩 추가(만료 없음): 25초 경과 -> 2개 추가
+    g.start_time -= 25
+    g.apply_actions()
+    assert len(g._open_orders) == 2, len(g._open_orders)
+    g.start_time -= 10  # 총 35초 경과 -> 3개째
+    g.apply_actions()
+    assert len(g._open_orders) == 3
+    last = g.trajectory[-1]
+    assert last["open_orders"] == [["onion"] * 3] * 3, last["open_orders"]
+    kinds = [e["type"] for e in g.trajectory[-2]["order_events"]]
+    assert "added" in kinds and "rejected" in kinds and "delivered" in kinds, kinds
+
+    # 새 라운드(activate)가 오면 주문 목록이 다시 초기 상태로
+    g.layouts.append("cramped_room")
+    g.activate()
+    assert len(g._open_orders) == 1 and g._next_order_at_sec == ORDER_ARRIVAL_INTERVAL_SEC
+    print("  PASS (시작 1개 -> 10초마다 +1, 배달 시 점수+삭제, 빈 목록이면 0점, "
+          "화면/로그 반영, 라운드 시작 시 초기화)\n")
+
+
 def test_end_to_end_logging_and_metrics():
     print("=== Test 7 (End-to-End): 핑 채널 -> trajectory 로깅 -> compute_metrics.py 연결 테스트 ===")
     bot = make_bot()
@@ -713,6 +785,99 @@ def test_end_to_end_logging_and_metrics():
     print("  PASS (핑 2건이 trajectory pickle -> compute_metrics.py까지 그대로 연결됨)\n")
 
 
+def test_datalog_nickname_and_files():
+    """Test 21: 닉네임이 pkl/index.csv에 남고, 저장 경로는 환경변수로 바뀐다."""
+    import csv, os, pickle, tempfile, glob
+    from experiment.server_ext.data_log import (
+        DataLogMixin, sanitize_nickname, safe_filename_part, ENV_DATA_DIR)
+
+    assert sanitize_nickname("  홍길동\n ") == "홍길동"
+    assert sanitize_nickname("   ") is None and sanitize_nickname(None) is None
+    assert len(sanitize_nickname("a" * 50)) == 20
+    assert "/" not in safe_filename_part("a/b\\c:d")
+
+    class _Base:
+        def __init__(self):
+            self.players = ["sidA", "bot"]
+            self.human_players = {"sidA"}
+            self.trajectory = [{"layout_name": "cramped_room", "score": 20}]
+            self.write_data = True
+            self.write_config = {"type": "HA"}
+            self.max_time = 60
+        def activate(self):
+            pass
+    class _G(DataLogMixin, _Base):
+        pass
+
+    tmp = tempfile.mkdtemp()
+    old = os.environ.get(ENV_DATA_DIR)
+    os.environ[ENV_DATA_DIR] = tmp
+    try:
+        g = _G(); g._datalog_init(); g.activate()
+        g.set_nickname("sidA", "홍길동")
+        d = g.get_data()
+        assert d["nicknames"] == {"0": "홍길동", "1": "AI_BOT"}, d["nicknames"]
+        assert g.trajectory == []  # 원본 계약: 비움
+        files = glob.glob(os.path.join(tmp, "*", "round1_cramped_room.pkl"))
+        assert len(files) == 1 and "홍길동" in files[0], files
+        saved = pickle.load(open(files[0], "rb"))
+        assert saved["nicknames"]["0"] == "홍길동" and saved["meta"]["game_type"] == "HA"
+        rows = list(csv.reader(open(os.path.join(tmp, "index.csv"), encoding="utf-8-sig")))
+        assert rows[1][5] == "홍길동|AI_BOT" and rows[1][6] == "20", rows
+        assert g.get_data()["trajectory"] == []  # 빈 호출은 파일 안 만듦
+        assert len(glob.glob(os.path.join(tmp, "*", "*.pkl"))) == 1
+    finally:
+        if old is None: os.environ.pop(ENV_DATA_DIR, None)
+        else: os.environ[ENV_DATA_DIR] = old
+    print("PASS test_datalog_nickname_and_files")
+
+
+
+def test_bot_delivers_when_counters_full_and_follows_oldest_order():
+    """Test 22: (a) 빈 카운터 <=1이면 deliver 제외 봇도 서빙, (b) 가장 오래된
+    열린 주문의 재료를 집는다, (c) 게임이 NPC에 open_orders를 동기화한다."""
+    from collections import defaultdict
+    from overcooked_ai_py.mdp.overcooked_mdp import (
+        OvercookedGridworld, SoupState, ObjectState, Recipe)
+    from overcooked_ai_py.planning.planners import MediumLevelActionManager
+    from experiment.agents.role_restricted_bot import RoleRestrictedBot, build_mlam_params
+
+    mdp = OvercookedGridworld.from_layout_name("cramped_room")
+    mlam = MediumLevelActionManager.from_pickle_or_compute(mdp, build_mlam_params(mdp))
+    bot = RoleRestrictedBot(mlam, excluded_roles=["deliver"]); bot.set_agent_index(0)
+    st = mdp.get_standard_start_state()
+    st.players[0].set_object(SoupState.get_soup(st.players[0].position, num_onions=3, finished=True))
+    serve = set(mlam.deliver_soup_actions())
+    assert not any(g in serve for g in bot.ml_action(st)), "자리 여유가 있으면 서빙 안 함"
+    empt = [c for c in mlam.counter_drop if c in set(mdp.get_empty_counter_locations(st))]
+    for c in empt[:-1]:
+        st.add_object(ObjectState("dish", c))
+    assert bot._free_counter_count(st) == 1
+    assert all(g in serve for g in bot.ml_action(st)), "빈 자리 1개면 서빙"
+
+    mdp2 = OvercookedGridworld.from_layout_name("counter_circuit")
+    mlam2 = MediumLevelActionManager.from_pickle_or_compute(mdp2, build_mlam_params(mdp2))
+    b2 = RoleRestrictedBot(mlam2, excluded_roles=["deliver"]); b2.set_agent_index(0)
+    s2 = mdp2.get_standard_start_state()
+    b2.open_orders = [Recipe(["onion", "tomato", "tomato"])]
+    pot = mdp2.get_pot_locations()[0]
+    td = set(mlam2.pickup_tomato_actions(defaultdict(list)))
+    od = set(mlam2.pickup_onion_actions(defaultdict(list)))
+    assert all(g in od for g in b2.ml_action(s2)), "빈 냄비: 첫 재료(양파)"
+    s2.objects[pot] = SoupState.get_soup(pot, num_onions=1, num_tomatoes=0)
+    assert all(g in td for g in b2.ml_action(s2)), "양파 들어감: 토마토 필요"
+
+    class _P: pass
+    from experiment.server_ext.order_queue import OrderQueueMixin
+    class _Q(OrderQueueMixin):
+        pass
+    q = _Q(); q._orders_init(); q.npc_policies = {"b": _P()}
+    q._open_orders = [Recipe(["onion"] * 3)]
+    q._sync_orders_to_bots()
+    assert q.npc_policies["b"].open_orders == q._open_orders
+    print("PASS test_bot_delivers_when_counters_full_and_follows_oldest_order")
+
+
 if __name__ == "__main__":
     test_unknown_action_still_raises_keyerror()
     test_normal_move_unaffected()
@@ -734,5 +899,8 @@ if __name__ == "__main__":
     test_enqueue_action_overwrites_stale_instead_of_blocking()
     test_bot_speed_throttle_halves_action_frequency()
     test_speed_throttle_survives_pickle_without_tick_counter()
+    test_order_queue_add_deliver_reject()
+    test_datalog_nickname_and_files()
+    test_bot_delivers_when_counters_full_and_follows_oldest_order()
     test_end_to_end_logging_and_metrics()
     print("Phase 2 전체(핑 채널 + 봇 반응 + 로깅 + 지표 계산) 테스트 통과.")
