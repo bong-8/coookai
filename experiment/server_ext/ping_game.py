@@ -276,6 +276,6 @@ def build_ping_enabled_game_class(overcooked_game_cls):
             super(PingEnabledGame, self).__init__(*args, **kwargs)
             self._ping_init()
             self._orders_init()
-        self._datalog_init()
+            self._datalog_init()
 
     return PingEnabledGame

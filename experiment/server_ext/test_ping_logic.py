@@ -878,6 +878,30 @@ def test_bot_delivers_when_counters_full_and_follows_oldest_order():
     print("PASS test_bot_delivers_when_counters_full_and_follows_oldest_order")
 
 
+def test_build_class_instantiates_with_all_mixins():
+    """Test 23: build_ping_enabled_game_class()가 만든 클래스를 실제로 만들고
+    인스턴스를 생성했을 때 믹스인 초기화(_ping/_orders/_datalog)가 모두 되는지.
+    (이전엔 이 함수를 아무 테스트도 호출하지 않아, 들여쓰기 실수로 app.py
+    import 시점에 NameError가 나는 걸 놓쳤다 — 2026-10-05 사용자 보고)"""
+    from experiment.server_ext.ping_game import build_ping_enabled_game_class
+
+    class _Base:
+        def __init__(self, *a, **k):
+            self.players = []
+            self.human_players = set()
+            self.npc_policies = {}
+            self.trajectory = []
+            self.pending_actions = []
+            self.write_data = False
+    G = build_ping_enabled_game_class(_Base)
+    g = G()
+    for attr in ("_nicknames", "_open_orders", "_session_started"):
+        assert hasattr(g, attr), attr
+    g.set_nickname("x", "닉")
+    assert g._nicknames == {"x": "닉"}
+    print("PASS test_build_class_instantiates_with_all_mixins")
+
+
 if __name__ == "__main__":
     test_unknown_action_still_raises_keyerror()
     test_normal_move_unaffected()
@@ -902,5 +926,6 @@ if __name__ == "__main__":
     test_order_queue_add_deliver_reject()
     test_datalog_nickname_and_files()
     test_bot_delivers_when_counters_full_and_follows_oldest_order()
+    test_build_class_instantiates_with_all_mixins()
     test_end_to_end_logging_and_metrics()
     print("Phase 2 전체(핑 채널 + 봇 반응 + 로깅 + 지표 계산) 테스트 통과.")
