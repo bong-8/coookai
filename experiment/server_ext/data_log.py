@@ -92,6 +92,12 @@ class DataLogMixin:
         nick = sanitize_nickname(nickname)
         if nick:
             self._nicknames[player_id] = nick
+            # 한 명이 먼저 나가 players에서 빠져도(중도 이탈) 그 자리의
+            # 닉네임이 로그에서 AI_BOT으로 바뀌지 않도록 슬롯 번호로도 기억.
+            if player_id in getattr(self, "players", []):
+                if not hasattr(self, "_slot_nicks"):
+                    self._slot_nicks = {}
+                self._slot_nicks[self.players.index(player_id)] = nick
 
     def activate(self):
         super(DataLogMixin, self).activate()
@@ -134,6 +140,9 @@ class DataLogMixin:
                 out[str(idx)] = "anonymous"
             else:
                 out[str(idx)] = "AI_BOT"
+        for idx, nick in getattr(self, "_slot_nicks", {}).items():
+            if out.get(str(idx), "AI_BOT") in ("AI_BOT", "anonymous") or str(idx) not in out:
+                out[str(idx)] = nick
         return out
 
     def _log_meta(self, layout):
@@ -200,6 +209,13 @@ class DataLogMixin:
         # 있으면 잠깐 기다렸다 재시도한다. 끝까지 안 되면 같은 폴더에 다른
         # 이름으로 한 번 더 시도(데이터를 잃는 것보다 파일명이 달라지는 게 낫다).
         _dump_with_retry(data, path)
+        # 눈으로 볼 수 있는 CSV(틱별 기록 + 사건 목록)를 같은 이름으로 함께 저장.
+        # pkl이 원본 보관용이고 CSV는 보기용이다. 실패해도 게임·pkl에는 영향 없음.
+        try:
+            from experiment.analysis.export_readable import export_data
+            export_data(data, path.with_suffix(""))
+        except Exception as e:
+            print(f"[data_log] CSV 저장 실패(pkl은 저장됨): {e!r}")
 
         self._append_index(base, data, layout, path)
 

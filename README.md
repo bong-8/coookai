@@ -90,7 +90,8 @@ src/overcooked_ai_py/data/layouts/*_mixed.layout   토마토를 추가한 실험
 
 ## 6. 로그와 분석
 
-- 저장: `<로그폴더>/<시작시각>_<HH|HA>_<닉네임>/round<N>_<레이아웃>.pkl` + `index.csv` (라운드마다 한 줄)
+- 저장: `<로그폴더>/<시작시각>_<HH|HA>_<닉네임>/round<N>_<레이아웃>.pkl`(원본 보관용) + 같은 이름의 `.csv`(틱별 기록, 엑셀로 열림)·`_events.csv`(주문·서빙·핑 사건 목록) + `index.csv`(라운드마다 한 줄). `HH`=사람-사람, `HA`=사람-AI봇
+- 이미 있는 pkl 변환: `python experiment\analysis\export_readable.py <로그폴더>`
 - 분석: `python experiment\analysis\analyze_session.py <로그폴더> --csv out.csv`
 - 지표: 점수·배달 수·0점 배달·주문 대기시간 / 유휴·막힌 이동·기능적 지연(수프 완성→수습)·인계 지연 / 핑 종류별 수·소통 효율·비켜줘 일치율
 - 해석 주의: 봇의 STAY 비율은 속도 제한 때문에 원래 높음(`waiting_ratio` 사용), `counter_circuit` 점수는 원본 체계라 다른 판과 규모가 다름(배달 수로 비교).
