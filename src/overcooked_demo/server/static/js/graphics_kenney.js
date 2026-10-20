@@ -24,6 +24,8 @@
         'chef_p2_SOUTH', 'chef_p2_EAST', 'chef_p2_NORTH', 'chef_p2_WEST'
     ];
     var K_TILE = { 'X': 'counter', 'P': 'tile_pot', 'O': 'tile_onions', 'T': 'tile_tomatoes', 'D': 'tile_dishes', 'S': 'tile_serve' };
+    var OPEN_Y = 40;            // 냄비 입구(타원) 중심의 타일 내 y
+    var SOUP_COLOR = { o: 0xf4d678, t: 0xe0503f, m: 0xeb8c50 };
     var HELD_POS = { SOUTH: [40, 60], EAST: [60, 54], WEST: [20, 54], NORTH: [40, 48] };
 
     function names(ings) { return (ings || []).map(function (x) { return typeof x === 'string' ? x : x.name; }); }
@@ -50,6 +52,7 @@
             this._kLast = null;
             this._kObjSig = null;
             this._kHeld = {};
+            this._kFx = {};
             this.sprites = {};
             this.drawLevel();
             this._drawState(this.state, this.sprites);
@@ -170,6 +173,7 @@
             var T = this.tileSize, self = this;
             var add = function (o) { self._kObjs.push(o); return o; };
             var potsWithSoup = {};
+            var fxWant = {};
             for (var p in state.objects) {
                 if (!state.objects.hasOwnProperty(p)) { continue; }
                 var obj = state.objects[p];
@@ -180,6 +184,23 @@
                     var ings = names(obj._ingredients);
                     add(this._kChips(cx, T * y + 3, ings, 20, 3));
                     var cook = obj.cook_time || this.cook_time;
+                    var ox = cx, oy = T * y + OPEN_Y, kind = soupKind(ings);
+                    var cookingNow = !obj.is_ready && obj._cooking_tick >= 0 && ings.length >= 3;
+                    // 냄비 속: 재료만 들어 있으면 물 + 재료 그림, 조리 중/완성이면 수프 색
+                    if (ings.length) {
+                        if (cookingNow || obj.is_ready) {
+                            add(this.add.ellipse(ox, oy, 34, 19, SOUP_COLOR[kind], 1).setDepth(2));
+                            add(this.add.ellipse(ox - 5, oy - 3, 12, 5, 0xffffff, obj.is_ready ? 0.35 : 0.2).setDepth(2));
+                        } else {
+                            add(this.add.ellipse(ox, oy, 34, 19, 0x8ea4b8, 1).setDepth(2));
+                            var spots = [[-9, -1], [9, -1], [0, 4]];
+                            for (var q = 0; q < ings.length && q < 3; q++) {
+                                add(this.add.image(ox + spots[q][0], oy + spots[q][1], ings[q] === 'onion' ? 'k_item_onion' : 'k_item_tomato').setDisplaySize(16, 16).setDepth(2));
+                            }
+                        }
+                    }
+                    if (obj.is_ready) { fxWant[x + ',' + y] = { mode: 'steam', x: ox, y: oy }; }
+                    else if (cookingNow) { fxWant[x + ',' + y] = { mode: 'bubble', x: ox, y: oy, color: SOUP_COLOR[kind] }; }
                     var g = add(this.add.graphics()); g.setDepth(3);
                     var cy = T * y + T * 0.62;
                     if (obj.is_ready) {
@@ -199,6 +220,7 @@
                     add(this.add.image(cx, T * y + 34, k).setDisplaySize(36, 36).setDepth(1));
                 }
             }
+            this._kReconcileFx(fxWant);
             // 재료가 없는 냄비도 빈 칸 3개를 보여 준다
             for (var r in this.terrain) {
                 if (!this.terrain.hasOwnProperty(r)) { continue; }
@@ -207,6 +229,43 @@
                         add(this._kChips(T * c + T / 2, T * Number(r) + 3, [], 20, 3));
                     }
                 }
+            }
+        }
+
+        // ── 효과: 조리 중 거품 / 완성 증기 (냄비마다 하나, 상태가 바뀔 때만 교체) ──
+        _kReconcileFx(want) {
+            for (var key in this._kFx) {
+                if (!this._kFx.hasOwnProperty(key)) { continue; }
+                if (!want[key] || want[key].mode !== this._kFx[key].mode) {
+                    this._kFx[key].timer.remove(false);
+                    delete this._kFx[key];
+                }
+            }
+            var self = this;
+            for (var k in want) {
+                if (!want.hasOwnProperty(k) || this._kFx[k]) { continue; }
+                (function (w) {
+                    var timer = self.time.addEvent({
+                        delay: w.mode === 'steam' ? 240 : 330, loop: true,
+                        callback: function () { self._kPuff(w); }
+                    });
+                    self._kFx[k] = { mode: w.mode, timer: timer };
+                })(want[k]);
+            }
+        }
+
+        _kPuff(w) {
+            var jitter = Phaser.Math.Between(-9, 9);
+            if (w.mode === 'steam') {
+                var r = Phaser.Math.Between(8, 12);
+                var c = this.add.circle(w.x + jitter, w.y - 4, r, 0xffffff, 0.75).setDepth(8);
+                this.tweens.add({ targets: c, y: w.y - 44 - Phaser.Math.Between(0, 12), x: c.x + Phaser.Math.Between(-6, 6),
+                    alpha: 0, scaleX: 1.9, scaleY: 1.9, duration: 1100, ease: 'Sine.easeOut',
+                    onComplete: function () { c.destroy(); } });
+            } else {
+                var b = this.add.circle(w.x + jitter, w.y + Phaser.Math.Between(-3, 3), Phaser.Math.Between(2, 3), 0xffffff, 0.75).setDepth(8);
+                this.tweens.add({ targets: b, y: b.y - 7, alpha: 0, scaleX: 1.5, scaleY: 1.5, duration: 450,
+                    onComplete: function () { b.destroy(); } });
             }
         }
 

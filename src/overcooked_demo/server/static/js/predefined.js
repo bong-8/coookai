@@ -141,6 +141,7 @@ socket.on('end_game', function(data) {
     // 마지막 라운드 기록도 reset_game과 똑같이 누적해둔다 — 세션 전체(5개
     // 난이도) 기록이 "게임 기록 보기"에 전부 모이게.
     recordRoundResult(data.data);
+    renderGameOverSummary();
 
     // Game ended unexpectedly
     if (data.status === 'inactive') {
@@ -320,6 +321,22 @@ function recordRoundResult(data) {
     });
 }
 
+// 게임 종료 화면: 총점 + 단계별 카드 (2026-10-21)
+function renderGameOverSummary() {
+    var total = 0, $cards = $('#go-rounds').empty();
+    window.GAME_RECORD.forEach(function (r, i) {
+        total += (r.score || 0);
+        var m = Math.floor(r.timeElapsedSec / 60), sec = r.timeElapsedSec % 60;
+        $cards.append(
+            "<div class='go-card'><div class='st'>" + (i + 1) + "단계</div>" +
+            "<div class='sc'>" + (r.score || 0) + "점</div>" +
+            "<div class='tm'>" + m + "분 " + sec + "초</div></div>"
+        );
+    });
+    $('#go-total').text(total);
+    $('#go-sub').text(window.GAME_RECORD.length + "개 단계를 마쳤어요. 수고하셨습니다.");
+}
+
 function renderGameRecord() {
     var $body = $("#game-record-body");
     $body.empty();
@@ -333,7 +350,7 @@ function renderGameRecord() {
         var timeStr = minutes + "분 " + seconds + "초";
         $body.append(
             "<tr>" +
-            "<td>" + round.layout + "</td>" +
+            "<td>" + (window.GAME_RECORD.indexOf(round) + 1) + "단계</td>" +
             "<td>" + round.score + "</td>" +
             "<td>" + timeStr + "</td>" +
             "<td>" + round.pingCounts.thanks + "</td>" +
@@ -346,15 +363,15 @@ function renderGameRecord() {
 }
 
 $(function () {
-    $('#view-record-btn').click(function () {
+    $('#view-record-btn').text('자세한 기록 보기').click(function () {
         var $panel = $('#game-record');
         if ($panel.is(':visible')) {
             $panel.hide();
-            $(this).text('게임 기록 보기');
+            $(this).text('자세한 기록 보기');
         } else {
             renderGameRecord();
             $panel.show();
-            $(this).text('게임 기록 숨기기');
+            $(this).text('자세한 기록 숨기기');
         }
     });
     $('#back-to-start-btn').click(function () {

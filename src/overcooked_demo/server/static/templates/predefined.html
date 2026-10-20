@@ -103,19 +103,32 @@
              세션의 라운드별 기록을 볼 수 있는 버튼, (2) 실험 시작 화면으로
              돌아가는 버튼을 추가했다. -->
         <div id="game-over" style="display:none">
-            <h4>Game Over</h4>
+            <!-- 2026-10-21: 게임 종료 화면 개선 — 총점을 크게, 단계별 결과를 카드로(predefined.js renderGameOverSummary) -->
+            <style>
+                #game-over .go-title { font-size: 30px; font-weight: 700; margin-top: 8px; }
+                #game-over .go-sub { color: #666; margin-bottom: 14px; }
+                #game-over .go-total { display: inline-block; background: #fff6dd; border: 2px solid #f0c24b; border-radius: 16px; padding: 14px 40px; margin: 6px 0 16px; }
+                #game-over .go-total .num { font-size: 56px; font-weight: 800; line-height: 1.1; color: #c9410c; }
+                #game-over .go-total .lbl { font-size: 15px; color: #7a6a3a; }
+                #game-over .go-rounds { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; max-width: 640px; margin: 0 auto 16px; }
+                #game-over .go-card { background: #fff; border: 1px solid #ddd; border-radius: 12px; padding: 10px 14px; min-width: 108px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+                #game-over .go-card .st { font-size: 13px; color: #888; }
+                #game-over .go-card .sc { font-size: 26px; font-weight: 700; color: #333; }
+                #game-over .go-card .tm { font-size: 12px; color: #888; }
+            </style>
+            <div class="go-title">게임이 끝났어요 🎉</div>
+            <div class="go-sub" id="go-sub">수고하셨습니다.</div>
+            <div class="go-total"><div class="lbl">전체 점수</div><div class="num" id="go-total">0</div></div>
+            <div class="go-rounds" id="go-rounds"></div>
             <div style="margin: 14px 0;">
-                <button id="view-record-btn" class="btn btn-outline-primary">게임 기록 보기</button>
-                <button id="back-to-start-btn" class="btn btn-outline-secondary">처음 화면으로</button>
+                <button id="view-record-btn" class="btn btn-outline-primary">자세한 기록 보기</button>
+                <button id="back-to-start-btn" class="btn btn-secondary">처음 화면으로</button>
             </div>
-            <!-- predefined.js의 renderGameRecord()가 채운다. 라운드(=레이아웃)가
-                 끝날 때마다(reset_game/end_game) 누적해 둔 기록을 여기 표로
-                 보여준다 — 클릭 전엔 숨겨둠. -->
             <div id="game-record" style="display:none; max-width: 560px; margin: 0 auto; text-align: left;">
                 <table class="table table-sm table-bordered">
                     <thead>
                         <tr>
-                            <th>난이도</th>
+                            <th>단계</th>
                             <th>최종 점수</th>
                             <th>소요 시간</th>
                             <th>고마워</th>

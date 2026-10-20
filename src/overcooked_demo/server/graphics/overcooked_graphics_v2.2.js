@@ -86,7 +86,10 @@ class GraphicsManager {
         let start_info = graphics_config.start_info;
         scene_config.terrain = start_info.terrain;
         scene_config.start_state = start_info.state;
-        game_config.scene = new OvercookedScene(scene_config);
+        // 2026-10-21: ?skin=kenney 일 때만 새 그래픽(graphics_kenney.js). 기본은 원본 그대로.
+        let use_kenney = (typeof KenneyScene !== 'undefined') &&
+            (new URLSearchParams(window.location.search).get('skin') === 'kenney');
+        game_config.scene = use_kenney ? new KenneyScene(scene_config) : new OvercookedScene(scene_config);
         game_config.width = scene_config.tileSize*scene_config.terrain[0].length;
         game_config.height = scene_config.tileSize*scene_config.terrain.length  + scene_config.hud_size;
         game_config.parent = graphics_config.container_id;
