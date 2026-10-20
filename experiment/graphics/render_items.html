@@ -1,0 +1,20 @@
+<!doctype html><html><body style="margin:0"><canvas id="c" width="256" height="256"></canvas>
+<script type="importmap">{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+const r=new THREE.WebGLRenderer({canvas:document.getElementById('c'),alpha:true,antialias:true,preserveDrawingBuffer:true});
+r.setSize(256,256); r.setClearColor(0,0); r.outputColorSpace=THREE.SRGBColorSpace;
+const scene=new THREE.Scene(); scene.add(new THREE.AmbientLight(0xffffff,1.7));
+const dl=new THREE.DirectionalLight(0xffffff,1.6); dl.position.set(2,5,3); scene.add(dl);
+const cam=new THREE.OrthographicCamera(-0.55,0.55,0.55,-0.55,0.1,50); const L=new GLTFLoader();
+window.renderItem=async function(path,tilt){
+  while(scene.children.length>2) scene.remove(scene.children[2]);
+  const g=await L.loadAsync(path); const m=g.scene; scene.add(m);
+  const b=new THREE.Box3().setFromObject(m); const sz=b.getSize(new THREE.Vector3()); const c=b.getCenter(new THREE.Vector3());
+  const s=0.9/Math.max(sz.x,sz.y,sz.z); m.scale.setScalar(s); m.position.set(-c.x*s,-c.y*s,-c.z*s);
+  cam.position.set(0,Math.sin(tilt)*2,Math.cos(tilt)*2); cam.lookAt(0,0,0); r.render(scene,cam);
+  return document.getElementById('c').toDataURL('image/png');
+}
+window.ready=true;
+</script></body></html>

@@ -96,6 +96,7 @@ socket.on('start_game', function(data) {
 });
 
 socket.on('reset_game', function(data) {
+    if (window.guideHide) { window.guideHide(); }
     graphics_end();
     disable_key_listener();
     disable_ping_controls();
@@ -124,9 +125,12 @@ socket.on('reset_game', function(data) {
 socket.on('state_pong', function(data) {
     // Draw state update
     drawState(data['state']);
+    // 자동 가이드(guide.js): 서버가 게임을 멈추고 안내를 보낼 때만 오버레이를 띄운다.
+    if (window.guideOnState) { window.guideOnState(data['state']); }
 });
 
 socket.on('end_game', function(data) {
+    if (window.guideHide) { window.guideHide(); }
     // Hide game data and display game-over html
     graphics_end();
     disable_key_listener();
@@ -456,9 +460,12 @@ $(function() {
         // 자동으로 매칭한다 — 사람이 봇 이름을 직접 고르다 엉뚱한 봇(혹은
         // 공개 데모 샘플 에이전트)을 고르는 실수를 원천 차단한다.
         let condition = $('#override-condition').val();
-        if (condition === 'ai') {
+        if (condition === 'ai' || condition === 'ai_guide') {
             params.playerZero = 'human';
             params.playerOne = LAYOUT_TO_BOT[firstLayout] || config.experimentParams.playerOne;
+            // 훈련 조건 1: 규칙 봇 + 자동 가이드. 서버가 이 값으로 가이드를 켠다
+            // (experiment/server_ext/guide_game.py). 'ai' 는 가이드 없는 조건 3.
+            if (condition === 'ai_guide') { params.guide = 'script'; }
         } else if (condition === 'human') {
             // 사람-사람 조건: 두 번째 참가자는 자신의 컴퓨터에서 이 화면에
             // 접속해 "시작하기"만 누르면 된다 (서버가 대기 중인 게임에

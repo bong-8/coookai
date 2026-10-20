@@ -1,0 +1,2 @@
+Graphics based on Kenney "Food Kit 2.0" and "Mini Characters 1.0" (Creative Commons Zero, CC0) - https://kenney.nl
+Rendered/composited for this project.

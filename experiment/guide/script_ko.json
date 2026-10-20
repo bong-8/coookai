@@ -1,0 +1,133 @@
+{
+  "meta": {
+    "version": "draft-1",
+    "language": "ko",
+    "note": "초안입니다. 문구·트리거 시점은 교수님과 협의 후 확정하세요. 사실 관계(조작·점수 규칙)는 static/templates/instructions.html 의 '게임 방법'과 같게 유지합니다."
+  },
+  "settings": {
+    "ticks_per_sec": 10,
+    "min_gap_sec": 8,
+    "max_per_round": 4,
+    "min_display_sec": 1.5,
+    "llm_timeout_sec": 3.0
+  },
+  "steps": [
+    {
+      "id": "r1_intro",
+      "when": {"type": "round_start", "round": 1},
+      "once": "session",
+      "ignore_limits": true,
+      "priority": 100,
+      "text": [
+        "게임 방법을 간단히 안내할게요. 방향키로 움직이고, 스페이스바로 바라보는 물건을 집거나 놓고 사용해요.",
+        "파트너와 함께 화면 아래 주문 목록의 수프를 만들어 서빙하면 점수를 얻어요. 한 단계는 60초이고, 안내가 나오는 동안에는 시간이 흐르지 않아요."
+      ],
+      "key_points": ["방향키로 이동", "스페이스바로 상호작용", "주문 목록의 수프를 서빙하면 점수", "안내 중에는 시간이 멈춤"],
+      "must_include": ["방향키", "스페이스"],
+      "max_chars": 120
+    },
+    {
+      "id": "r2_comm",
+      "when": {"type": "round_start", "round": 2},
+      "once": "session",
+      "ignore_limits": true,
+      "priority": 90,
+      "text": "파트너에게 숫자키로 신호를 보낼 수 있어요. 1 고마워, 2 비켜줘, 3 미안해, 4 OK예요.",
+      "key_points": ["숫자키 1~4로 신호", "1 고마워 2 비켜줘 3 미안해 4 OK"],
+      "must_include": ["숫자키"],
+      "max_chars": 90
+    },
+    {
+      "id": "forced_split",
+      "when": {"type": "round_start"},
+      "layouts": ["forced_coordination_mixed", "forced_coordination"],
+      "once": "session",
+      "ignore_limits": true,
+      "priority": 80,
+      "text": "이 단계에서는 두 사람이 서로 다른 구역에서 일해요. 가운데 카운터에 물건을 놓아서 서로 전달하세요.",
+      "key_points": ["서로 다른 구역", "가운데 카운터에 놓아 전달"],
+      "must_include": ["카운터"],
+      "max_chars": 90
+    },
+    {
+      "id": "first_ingredient",
+      "when": {"type": "human_pickup", "item": "ingredient"},
+      "once": "session",
+      "priority": 50,
+      "text": "재료를 집었어요. 냄비 앞에서 스페이스바를 눌러 넣어요. 냄비에는 재료를 3개 넣어야 해요.",
+      "key_points": ["냄비 앞에서 스페이스바로 넣기", "재료 3개"],
+      "must_include": ["냄비", "3개"],
+      "max_chars": 100
+    },
+    {
+      "id": "pot_full_start_cooking",
+      "when": {"type": "pot_full", "hold_sec": 3},
+      "once": "session",
+      "priority": 60,
+      "text": "냄비에 재료가 3개 찼어요. 빈손으로 냄비 앞에서 스페이스바를 누르면 요리가 시작돼요.",
+      "key_points": ["빈손", "냄비 앞에서 스페이스바", "요리 시작"],
+      "must_include": ["빈손", "요리"],
+      "max_chars": 100
+    },
+    {
+      "id": "pot_mismatch",
+      "when": {"type": "pot_mismatch", "hold_sec": 1},
+      "once": "session",
+      "priority": 70,
+      "text": "냄비 속 재료가 주문 목록의 어떤 수프와도 맞지 않아요. 재료 구성이 주문과 정확히 같아야 점수를 받아요.",
+      "key_points": ["주문 목록과 재료 구성이 정확히 같아야 점수", "목록에 없는 수프는 0점"],
+      "must_include": ["주문"],
+      "max_chars": 110
+    },
+    {
+      "id": "soup_ready_dish",
+      "when": {"type": "soup_ready"},
+      "once": "session",
+      "priority": 55,
+      "text": "수프가 다 익었어요. 접시를 집어서 냄비 앞에서 스페이스바를 누르면 수프가 접시에 담겨요.",
+      "key_points": ["접시를 집기", "다 익은 냄비 앞에서 스페이스바", "접시에 담김"],
+      "must_include": ["접시"],
+      "max_chars": 100
+    },
+    {
+      "id": "holds_soup_serve",
+      "when": {"type": "human_holds_soup"},
+      "once": "session",
+      "priority": 55,
+      "text": "수프를 들었어요. 서빙대(회색 칸) 앞에서 스페이스바를 눌러 제출하세요.",
+      "key_points": ["서빙대(회색 칸)", "스페이스바로 제출"],
+      "must_include": ["서빙대"],
+      "max_chars": 80
+    },
+    {
+      "id": "first_score",
+      "when": {"type": "first_delivery"},
+      "once": "session",
+      "priority": 40,
+      "text": "서빙에 성공했어요! 주문 목록의 수프를 제출하면 점수를 얻고, 그 주문은 목록에서 사라져요.",
+      "key_points": ["주문 목록의 수프를 제출하면 점수", "해당 주문은 사라짐"],
+      "must_include": ["주문"],
+      "max_chars": 90
+    },
+    {
+      "id": "orders_grow",
+      "when": {"type": "order_added"},
+      "once": "session",
+      "priority": 30,
+      "text": "주문은 시간이 지나면 하나씩 늘어나요. 화면 아래 주문 목록을 확인하세요.",
+      "key_points": ["주문이 시간이 지나면 늘어남", "아래 주문 목록 확인"],
+      "must_include": ["주문 목록"],
+      "max_chars": 80
+    },
+    {
+      "id": "idle_help",
+      "when": {"type": "human_idle", "seconds": 12},
+      "once": "round",
+      "priority": 20,
+      "text": "막히셨나요? 주문 목록을 확인하고, 필요한 재료를 집어서 냄비에 넣어 보세요.",
+      "key_points": ["주문 목록 확인", "재료를 집어 냄비에 넣기"],
+      "must_include": ["주문 목록"],
+      "max_chars": 80
+    }
+  ]
+}

@@ -281,13 +281,22 @@ def build_ping_enabled_game_class(overcooked_game_cls):
     from experiment.server_ext.order_queue import OrderQueueMixin
     from experiment.server_ext.data_log import DataLogMixin
     from experiment.server_ext.human_input import HumanInputMixin
+    from experiment.server_ext.guide_game import GuideMixin
 
-    class PingEnabledGame(HumanInputMixin, DataLogMixin, OrderQueueMixin, PingMixin, overcooked_game_cls):
+    # GuideMixin 을 맨 앞(가장 바깥)에 둔다: 멈춰 있는 동안 들어오는 조작/핑을 다른
+    # 믹스인보다 먼저 버리고, tick() 에서 원본 tick 을 아예 안 부르게 하려면 그래야 한다.
+    class PingEnabledGame(GuideMixin, HumanInputMixin, DataLogMixin, OrderQueueMixin, PingMixin, overcooked_game_cls):
         def __init__(self, *args, **kwargs):
+            # "guide"(None/"script"/"llm")는 원본 생성자가 모르는 인자라 먼저 뺀다.
+            # 값은 클라이언트가 보낸 것이므로 허용 목록만 받는다(대본 경로는 서버가 정함).
+            guide = kwargs.pop("guide", None)
+            if guide not in ("script", "llm"):
+                guide = None
             super(PingEnabledGame, self).__init__(*args, **kwargs)
             self._ping_init()
             self._orders_init()
             self._datalog_init()
             self._input_init()
+            self._guide_init(guide)
 
     return PingEnabledGame
