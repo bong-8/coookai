@@ -127,10 +127,12 @@ socket.on('state_pong', function(data) {
     drawState(data['state']);
     // 자동 가이드(guide.js): 서버가 게임을 멈추고 안내를 보낼 때만 오버레이를 띄운다.
     if (window.guideOnState) { window.guideOnState(data['state']); }
+    if (window.pauseOnState) { window.pauseOnState(data['state']); }
 });
 
 socket.on('end_game', function(data) {
     if (window.guideHide) { window.guideHide(); }
+    if (window.pauseHide) { window.pauseHide(); }
     // Hide game data and display game-over html
     graphics_end();
     disable_key_listener();
@@ -240,6 +242,9 @@ function enable_key_listener() {
             if (!e.repeat) {
                 socket.emit('action', { 'action': 'SPACE' });
             }
+        } else if (e.which === 192 || e.code === 'Backquote') { // ` : 전문가용 일시정지/해제 (사람-사람 훈련)
+            e.preventDefault();
+            if (!e.repeat) { socket.emit('action', { 'action': 'PAUSE_TOGGLE' }); }
         } else if (PING_KEY_TO_TYPE.hasOwnProperty(e.which)) {
             e.preventDefault();
             if (!e.repeat) { // 키를 누르고 있어도 반복 전송되지 않게
@@ -321,19 +326,57 @@ function recordRoundResult(data) {
     });
 }
 
-// 게임 종료 화면: 총점 + 단계별 카드 (2026-10-21)
+// 메달 기준 (2026-10-21) — 60초 동안 얻을 수 있는 최고 점수를 기준으로 3단계.
+// 최고 점수 = 60초 동안 나오는 주문 8개(시작 1개 + 8초마다 1개) × 20점 = 160점.
+//   (규칙 기반 봇 2명 시뮬레이션: 쉬운 맵은 60초에 14~20개까지 만들 수 있어서 상한은 주문 공급량이다.
+//    어려운 맵은 확인 못 함 → 파일럿 결과로 조정.)
+// 마지막 주문은 56초에 나와 사실상 불가능하므로 금메달은 7개(140점) 이상.
+// 단계(수프 개수): 동 3개(1/3) · 은 6개(2/3) · 금 7개.  전체 메달 기준 = 이 값 × 단계 수.
+// img = static/assets/medals/medal{img}.png (Kenney Medals, CC0)
+var MEDAL_CONFIG = {
+    maxRoundScore: 160,
+    tiers: [   // min = 한 단계에서 필요한 점수
+        { min: 60, img: 1, name: '동메달' },
+        { min: 120, img: 2, name: '은메달' },
+        { min: 140, img: 3, name: '금메달' }
+    ]
+};
+function medalFor(tiers, score) {
+    var best = null;
+    tiers.forEach(function (t) { if (score >= t.min) { best = t; } });
+    return best;
+}
+function medalImg(t) { return "static/assets/medals/medal" + t.img + ".png"; }
+
+// 게임 종료 화면: 총점 + 메달 + 단계별 카드 (2026-10-21)
 function renderGameOverSummary() {
     var total = 0, $cards = $('#go-rounds').empty();
     window.GAME_RECORD.forEach(function (r, i) {
         total += (r.score || 0);
         var m = Math.floor(r.timeElapsedSec / 60), sec = r.timeElapsedSec % 60;
+        var rm = medalFor(MEDAL_CONFIG.tiers, r.score || 0);
         $cards.append(
             "<div class='go-card'><div class='st'>" + (i + 1) + "단계</div>" +
             "<div class='sc'>" + (r.score || 0) + "점</div>" +
-            "<div class='tm'>" + m + "분 " + sec + "초</div></div>"
+            "<div class='tm'>" + m + "분 " + sec + "초</div>" +
+            "<div class='md'>" + (rm ? "<img src='" + medalImg(rm) + "'><span>" + rm.name + "</span>" : "") + "</div></div>"
         );
     });
     $('#go-total').text(total);
+    // 전체 점수 메달: 달성한 것은 색깔, 못 얻은 것은 흐리게(기준 점수 표시)
+    var nRounds = Math.max(window.GAME_RECORD.length, 1);
+    var totalTiers = MEDAL_CONFIG.tiers.map(function (t) { return { min: t.min * nRounds, img: t.img, name: t.name }; });
+    var earned = medalFor(totalTiers, total), $medals = $('#go-medals').empty();
+    totalTiers.forEach(function (t, idx) {
+        var got = total >= t.min;
+        $medals.append(
+            "<div class='go-medal " + (got ? "earned" : "locked") + "'>" +
+            "<img src='" + medalImg(t) + "' style='animation-delay:" + (idx * 0.25) + "s'>" +
+            "<div class='nm'>" + t.name + "</div><div class='need'>" + t.min + "점 이상</div></div>"
+        );
+    });
+    $('#go-medal-msg').text(earned ? ("🏅 " + earned.name + " 획득!") : "이번에는 메달을 얻지 못했어요. 다음에 도전해 보세요.");
+    if (earned && window.gamePlaySound) { window.gamePlaySound('medal'); }
     $('#go-sub').text(window.GAME_RECORD.length + "개 단계를 마쳤어요. 수고하셨습니다.");
 }
 
@@ -491,6 +534,8 @@ $(function() {
             // "시작하기"를 누른 사람의 설정이 게임 전체에 적용된다.
             params.playerZero = 'human';
             params.playerOne = 'human';
+            // 전문가가 ` 키로 게임을 멈출 수 있게 한다(pause_game.py)
+            params.expert_pause = true;
         }
         // condition === 'default' 이면 config.json 값을 그대로 둔다.
 

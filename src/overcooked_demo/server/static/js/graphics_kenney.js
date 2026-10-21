@@ -17,7 +17,7 @@
     if (typeof OvercookedScene === 'undefined') { return; }
 
     var K_ASSETS = [
-        'floor_a', 'floor_b', 'counter', 'tile_onions', 'tile_tomatoes', 'tile_dishes', 'tile_serve', 'tile_pot',
+        'floor_a', 'floor_b', 'counter', 'tile_onions', 'tile_tomatoes', 'tile_dishes', 'tile_serve', 'serve_arrows', 'tile_pot',
         'item_onion', 'item_tomato', 'item_dish', 'item_soup_o', 'item_soup_t', 'item_soup_m',
         'chip_o', 'chip_t', 'chip_empty',
         'chef_p1_SOUTH', 'chef_p1_EAST', 'chef_p1_NORTH', 'chef_p1_WEST',
@@ -27,6 +27,21 @@
     var OPEN_Y = 40;            // 냄비 입구(타원) 중심의 타일 내 y
     var SOUP_COLOR = { o: 0xf4d678, t: 0xe0503f, m: 0xeb8c50 };
     var HELD_POS = { SOUTH: [40, 60], EAST: [60, 54], WEST: [20, 54], NORTH: [40, 48] };
+
+    // ── 효과음 (Kenney Casino Audio, CC0): 재료 넣기 / 조리 완료 / 서빙 성공. 소리 켜짐 여부는 브라우저에 저장 ──
+    var _sndCache = {};
+    function soundMuted() { try { return window.localStorage.getItem('game_sound_muted') === '1'; } catch (e) { return false; } }
+    function setSoundMuted(m) { try { window.localStorage.setItem('game_sound_muted', m ? '1' : '0'); } catch (e) { /* 저장 불가여도 동작 */ } }
+    window.gameSoundMuted = soundMuted;
+    window.gamePlaySound = function (name) {
+        if (soundMuted()) { return; }
+        try {
+            var base = _sndCache[name];
+            if (!base) { base = new Audio('static/assets/sounds/' + name + '.mp3'); base.preload = 'auto'; _sndCache[name] = base; }
+            var a = base.cloneNode(); a.volume = 0.5;
+            var pr = a.play(); if (pr && pr.catch) { pr.catch(function () { }); }
+        } catch (e) { /* 소리가 안 나도 게임은 계속 */ }
+    };
 
     function names(ings) { return (ings || []).map(function (x) { return typeof x === 'string' ? x : x.name; }); }
     function soupKind(ings) {
@@ -53,6 +68,8 @@
             this._kObjSig = null;
             this._kHeld = {};
             this._kFx = {};
+            this._kPrev = null;
+            ['put', 'ready', 'serve'].forEach(function (n) { try { var a = new Audio('static/assets/sounds/' + n + '.mp3'); a.preload = 'auto'; _sndCache[n] = a; } catch (e) { } });
             this.sprites = {};
             this.drawLevel();
             this._drawState(this.state, this.sprites);
@@ -85,8 +102,29 @@
                     var tile = this.add.image(T * col, T * Number(row), 'k_' + key);
                     tile.setOrigin(0);
                     tile.setDisplaySize(T, T);
+                    if (ch === 'S') { this._kServeArrows(col, Number(row)); }
                 }
             }
+        }
+
+        // 서빙 칸: 접시가 "나가는" 방향을 화살표로 강조. 바닥(' ')이 있는 쪽에서 칸 안쪽으로 향하고, 계속 깜박이며 움직인다.
+        _kServeArrows(col, row) {
+            var T = this.tileSize, t = this.terrain;
+            var cand = [[0, -1], [-1, 0], [1, 0], [0, 1]];   // 위, 왼, 오른, 아래 이웃 확인
+            var dir = [0, 1];                                 // 기본: 아래로
+            for (var i = 0; i < cand.length; i++) {
+                var nr = row + cand[i][1], nc = col + cand[i][0];
+                if (nr >= 0 && nr < t.length && nc >= 0 && nc < t[nr].length && t[nr][nc] === ' ') {
+                    dir = [-cand[i][0], -cand[i][1]];          // 이웃에서 이 칸으로 들어가는 방향
+                    break;
+                }
+            }
+            var angle = (dir[0] === 0 && dir[1] === 1) ? 0 : (dir[0] === 0 ? 180 : (dir[0] === -1 ? 90 : -90));
+            var cx = T * col + T / 2, cy = T * row + T * 0.4;
+            var img = this.add.image(cx, cy, 'k_serve_arrows');
+            img.setDisplaySize(T * 0.86, T * 0.86).setAngle(angle).setDepth(0.5);
+            this.tweens.add({ targets: img, x: cx + dir[0] * 4, y: cy + dir[1] * 4, alpha: 0.7,
+                duration: 650, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
         }
 
         // ── 상태(요리사/냄비/수프) ───────────────────────────────────
@@ -96,6 +134,7 @@
             sprites = typeof (sprites) === 'undefined' ? this.sprites : sprites;
             this._kDrawChefs(state, sprites);
             this._kDrawObjects(state);
+            this._kSounds(state);
         }
 
         _kDrawChefs(state, sprites) {
@@ -232,6 +271,27 @@
             }
         }
 
+        // 상태 변화를 보고 소리를 낸다(서버 변경 없음): 점수↑=서빙, 익은 냄비↑=조리 완료, 냄비 재료↑=재료 넣기
+        _kSounds(state) {
+            var ing = 0, readyN = 0;
+            for (var p in state.objects) {
+                if (!state.objects.hasOwnProperty(p)) { continue; }
+                var o = state.objects[p];
+                if (o.name === 'soup' && this.terrain[o.position[1]][o.position[0]] === 'P') {
+                    ing += (o._ingredients || []).length;
+                    if (o.is_ready) { readyN++; }
+                }
+            }
+            var cur = { ing: ing, readyN: readyN, score: Number(this.hud_data.score) || 0 };
+            var prev = this._kPrev; this._kPrev = cur;
+            if (!prev) { return; }
+            if (cur.score > prev.score) { window.gamePlaySound('serve'); }
+            else {
+                if (cur.readyN > prev.readyN) { window.gamePlaySound('ready'); }
+                if (cur.ing > prev.ing) { window.gamePlaySound('put'); }
+            }
+        }
+
         // ── 효과: 조리 중 거품 / 완성 증기 (냄비마다 하나, 상태가 바뀔 때만 교체) ──
         _kReconcileFx(want) {
             for (var key in this._kFx) {
@@ -271,7 +331,7 @@
 
         // ── HUD: 주문서 카드 + 점수/시간 ──────────────────────────────
         _drawHUD(hud, sprites, board_height) {
-            var sig = JSON.stringify([hud.all_orders, hud.time, hud.score]);
+            var sig = JSON.stringify([hud.all_orders, hud.time, hud.score, soundMuted()]);
             if (sig === this._kHudSig) { return; }
             this._kHudSig = sig;
             for (var i = 0; i < this._kHud.length; i++) { this._kHud[i].destroy(); }
@@ -316,6 +376,11 @@
                 add(this.add.text(8, y0 + 26, '주문 대기 중…', { font: '16px Arial', fill: '#aaaab5' }).setDepth(6));
             }
             var txt = '점수 ' + (hud.score === undefined ? 0 : hud.score) + '      남은 시간 ' + (hud.time === undefined ? '' : hud.time) + '초';
+            var muted = soundMuted();
+            var btn = add(this.add.text(W - 6, board_height + 94, muted ? '🔇 소리 꺼짐' : '🔊 소리 켜짐',
+                { font: 'bold 14px Arial', fill: '#ffffff', backgroundColor: muted ? '#7a3b3b' : '#4a5a6a', padding: { x: 8, y: 4 } }
+            ).setOrigin(1, 0).setDepth(6).setInteractive({ useHandCursor: true }));
+            btn.on('pointerdown', function () { setSoundMuted(!soundMuted()); self._kHudSig = null; });
             add(this.add.text(6, board_height + 96, txt, { font: 'bold 20px Arial', fill: '#ffffff' }).setDepth(6));
         }
     }
